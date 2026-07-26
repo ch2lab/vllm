@@ -682,12 +682,16 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             self._decode_wrappers_cudagraph: dict[
                 int, BatchDecodeWithPagedKVCacheWrapper
             ] = {}
+            self._uniform_decode_query_len = 1 + num_spec_tokens
             self._decode_cudagraph_max_bs = (1 + num_spec_tokens) * max_num_reqs
             if self.compilation_config.max_cudagraph_capture_size is not None:
                 self._decode_cudagraph_max_bs = min(
                     self._decode_cudagraph_max_bs,
                     self.compilation_config.max_cudagraph_capture_size,
                 )
+            self._prefill_wrappers_cudagraph: dict[
+                int, BatchPrefillWithPagedKVCacheWrapper
+            ] = {}
         try:
             self.dcp_world_size = get_dcp_group().world_size
             self.dcp_rank = get_dcp_group().rank_in_group
@@ -856,6 +860,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         )  # Extra buffer for mutable paged_kv_indptr.cpu in cuda graph mode
         self.paged_kv_indices = self._make_buffer(max_num_pages)
         self.paged_kv_last_page_len = self._make_buffer(max_num_reqs)
+        self._prefill_qo_indptr_gpu = torch.zeros(
+            max_num_reqs + 1, dtype=torch.int32, device=self.device
+        )
 
     # Keep SM90 prefill/decode Q dtype selection in one place.
     def get_q_data_type(self, is_prefill: bool) -> torch.dtype:
@@ -992,6 +999,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
     def _get_prefill_wrapper(
         self,
         causal: bool = True,
+        batch_size: int = 0,
+        use_cudagraph: bool = False,
     ) -> BatchPrefillWithPagedKVCacheWrapper | BatchDCPPrefillWrapper:
         if not causal:
             if self.use_dcp:
@@ -1010,6 +1019,29 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     backend="auto",
                 )
             return self._noncausal_prefill_wrapper
+
+        if use_cudagraph:
+            wrapper = self._prefill_wrappers_cudagraph.get(batch_size, None)
+            if wrapper is None:
+                backend = (
+                    "trtllm-gen"
+                    if (self.is_kvcache_nvfp4 and not self.use_fa2_nvfp4_kv)
+                    else "auto"
+                )
+                wrapper = BatchPrefillWithPagedKVCacheWrapper(
+                    self._get_workspace_buffer(),
+                    get_kv_cache_layout(),
+                    use_cuda_graph=True,
+                    qo_indptr_buf=self._prefill_qo_indptr_gpu[: batch_size + 1],
+                    paged_kv_indptr_buf=self.paged_kv_indptr.gpu[: batch_size + 1],
+                    paged_kv_indices_buf=self.paged_kv_indices.gpu,
+                    paged_kv_last_page_len_buf=(
+                        self.paged_kv_last_page_len.gpu[:batch_size]
+                    ),
+                    backend=backend,
+                )
+                self._prefill_wrappers_cudagraph[batch_size] = wrapper
+            return wrapper
 
         if self._prefill_wrapper is None:
             if self.use_dcp:
@@ -1418,7 +1450,18 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     max_seq_len=max_seq_len,
                 )
             else:
-                prefill_wrapper = self._get_prefill_wrapper(causal=attn_metadata.causal)
+                prefill_use_cudagraph = (
+                    self.enable_cuda_graph
+                    and num_decodes == 0
+                    and num_prefills <= self._decode_cudagraph_max_bs
+                    and num_prefill_tokens
+                    == num_prefills * self._uniform_decode_query_len
+                )
+                prefill_wrapper = self._get_prefill_wrapper(
+                    causal=attn_metadata.causal,
+                    batch_size=num_prefills if prefill_use_cudagraph else 0,
+                    use_cudagraph=prefill_use_cudagraph,
+                )
                 # Slicing CPU buffers that are only needed for FI native prefills
                 paged_kv_last_page_len_prefill_cpu = self.paged_kv_last_page_len.cpu[
                     prefill_start:num_reqs
