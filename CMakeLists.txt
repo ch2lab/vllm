@@ -1489,6 +1489,64 @@ if(VLLM_GPU_LANG STREQUAL "HIP")
   endif()
 endif()
 
+#
+# _sm70_turbomind_C extension: vendored TurboMind SM70 mma.sync.m8n8k4 AWQ GEMM.
+# Registered under namespace "_sm70tm" as a switchable alternative to our WMMA
+# AWQ kernel (torch.ops._C.awq_gemm_sm70). Built only for SM70 (Volta V100).
+#
+if(VLLM_GPU_LANG STREQUAL "CUDA")
+  cuda_archs_loose_intersection(SM70_TM_ARCHS "7.0" "${CUDA_ARCHS}")
+  if(SM70_TM_ARCHS)
+    message(STATUS "Enabling SM70 TurboMind AWQ GEMM extension.")
+    set(TM_ROOT "csrc/sm70_turbomind")
+    set(TM_LD "${TM_ROOT}/lmdeploy/src/turbomind")
+    set(VLLM_SM70_TM_SRC
+      "${TM_ROOT}/torch_bindings_sm70tm.cpp"
+      "${TM_ROOT}/ops/awq_sm70_gemm.cu"
+      "${TM_ROOT}/ops/tm_registry_sm70.cu"
+      "${TM_LD}/kernels/gemm/gemm.cu"
+      "${TM_LD}/kernels/gemm/kernel.cu"
+      "${TM_LD}/kernels/gemm/dispatch_cache.cu"
+      "${TM_LD}/kernels/gemm/context.cu"
+      "${TM_LD}/kernels/gemm/convert_v3.cu"
+      "${TM_LD}/kernels/gemm/cast.cu"
+      "${TM_LD}/kernels/gemm/unpack.cu"
+      "${TM_LD}/kernels/gemm/kernel/sm70_884_4.cu"
+      "${TM_LD}/kernels/gemm/kernel/sm70_884_8.cu"
+      "${TM_LD}/kernels/gemm/kernel/sm70_884_16.cu"
+      "${TM_LD}/kernels/gemm/tuner/cache_utils.cu"
+      "${TM_LD}/kernels/gemm/tuner/measurer.cu"
+      "${TM_LD}/kernels/gemm/tuner/sampler.cu"
+      "${TM_LD}/kernels/gemm/tuner/stopping_criterion.cc"
+      "${TM_LD}/kernels/gemm/tuner/params.cc"
+      "${TM_LD}/core/check.cc"
+      "${TM_LD}/core/layout.cc"
+      "${TM_LD}/core/context.cc"
+      "${TM_LD}/core/allocator.cc"
+      "${TM_LD}/core/buffer.cc"
+      "${TM_LD}/core/stream.cc"
+      "${TM_LD}/utils/logger.cc"
+      "${TM_LD}/utils/parser.cc")
+
+    set_gencode_flags_for_srcs(
+      SRCS "${VLLM_SM70_TM_SRC}"
+      CUDA_ARCHS "${SM70_TM_ARCHS}")
+
+    define_extension_target(
+      _sm70_turbomind_C
+      DESTINATION vllm
+      LANGUAGE CUDA
+      SOURCES ${VLLM_SM70_TM_SRC}
+      COMPILE_FLAGS ${VLLM_GPU_FLAGS}
+      ARCHITECTURES ${VLLM_GPU_ARCHES}
+      INCLUDE_DIRECTORIES "${TM_ROOT}/lmdeploy" "${TM_ROOT}/ops"
+      WITH_SOABI)
+
+    target_compile_definitions(_sm70_turbomind_C PRIVATE
+      ENABLE_SM70_TURBOMIND=1)
+  endif()
+endif()
+
 if(VLLM_GPU_LANG STREQUAL "HIP")
   #
   # _rocm_C extension

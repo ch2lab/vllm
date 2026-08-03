@@ -241,6 +241,76 @@ def _warm_fused_sigmoid_gating_delta_rule_update_kernel(
     )
 
 
+def _warm_fused_recurrent_decode_kernel(
+    device: torch.device, config: _QwenGDNWarmupConfig
+) -> None:
+    from vllm.third_party.flash_linear_attention.ops.fused_recurrent import (
+        fused_recurrent_gated_delta_rule_packed_decode,
+    )
+
+    num_tokens = 1
+    qkv_dim = 2 * config.h * config.k + config.hv * config.v
+    mixed_qkv = torch.empty((num_tokens, qkv_dim), dtype=config.conv_dtype, device=device)
+    a = torch.empty((num_tokens, config.hv), dtype=config.conv_dtype, device=device)
+    b = torch.empty_like(a)
+    initial_state = torch.empty(
+        (1, config.hv, config.v, config.k), dtype=config.state_dtype, device=device
+    )
+    out = torch.empty(
+        (num_tokens, 1, config.hv, config.v), dtype=config.conv_dtype, device=device
+    )
+    ssm_state_indices = torch.zeros((num_tokens,), dtype=torch.int32, device=device)
+
+    fused_recurrent_gated_delta_rule_packed_decode(
+        mixed_qkv=mixed_qkv,
+        a=a,
+        b=b,
+        A_log=config.a_log,
+        dt_bias=config.dt_bias,
+        scale=config.k**-0.5,
+        initial_state=initial_state,
+        out=out,
+        ssm_state_indices=ssm_state_indices,
+        use_qk_l2norm_in_kernel=True,
+    )
+
+
+def _warm_causal_conv1d_update_kernel(
+    device: torch.device, config: _QwenGDNWarmupConfig
+) -> None:
+    try:
+        from vllm.third_party.flash_linear_attention.ops.causal_conv1d import (
+            causal_conv1d_update,
+        )
+    except ImportError:
+        return
+
+    num_tokens = 1
+    conv_state = torch.empty(
+        (1, config.conv_dim, config.conv_kernel_size),
+        dtype=config.conv_dtype,
+        device=device,
+    )
+    x = torch.empty((num_tokens, config.conv_dim), dtype=config.conv_dtype, device=device)
+    weight = torch.empty(
+        (config.conv_dim, config.conv_kernel_size),
+        dtype=config.conv_dtype,
+        device=device,
+    )
+    bias = torch.empty((config.conv_dim,), dtype=config.conv_dtype, device=device)
+    conv_state_indices = torch.zeros((num_tokens,), dtype=torch.int32, device=device)
+
+    causal_conv1d_update(
+        x,
+        conv_state,
+        weight,
+        bias,
+        activation="silu",
+        conv_state_indices=conv_state_indices,
+        validate_data=False,
+    )
+
+
 def _synchronize_device(device: torch.device) -> None:
     if device.type == "cuda":
         torch.accelerator.synchronize(device)
@@ -278,4 +348,6 @@ def qwen_triton_warmup(
     _warm_causal_conv1d_fwd_kernel(device, gdn_config)
     _warm_fused_post_conv_kernel(device, gdn_config)
     _warm_fused_sigmoid_gating_delta_rule_update_kernel(device, gdn_config)
+    _warm_fused_recurrent_decode_kernel(device, gdn_config)
+    _warm_causal_conv1d_update_kernel(device, gdn_config)
     _synchronize_device(device)

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from typing import TYPE_CHECKING, Any, Union
 
 import torch
@@ -69,6 +70,20 @@ if TYPE_CHECKING:
     from vllm.model_executor.models.utils import WeightsMapper
 
 logger = init_logger(__name__)
+
+# SM70 AWQ decode GEMM backend selector (Volta V100).
+#   "wmma"      -> our WMMA 16x16x16 kernel (torch.ops._C.awq_gemm_sm70), default.
+#   "turbomind" -> vendored TurboMind mma.sync.m8n8k4 kernel (torch.ops._sm70tm).
+# Switchable for A/B comparison; turbomind requires the _sm70_turbomind_C ext.
+SM70_AWQ_BACKEND = os.getenv("VLLM_SM70_AWQ_BACKEND", "wmma").lower()
+
+
+def _sm70tm_available() -> bool:
+    try:
+        import vllm._sm70_turbomind_C  # noqa: register _sm70tm ops
+        return hasattr(torch.ops._sm70tm, "awq_sm70_prepare")
+    except (ImportError, AttributeError):
+        return False
 
 # AWQ uses a non-standard packing order within int32 values.
 # For 4-bit: standard order stores values at bit positions [0,4,8,12,16,20,24,28]
@@ -910,6 +925,34 @@ class AutoAWQLinearMethod(BaseAWQLinearMethod):
         layer.qzeros = torch.nn.Parameter(layer.qzeros.data, requires_grad=False)
         layer.scales = torch.nn.Parameter(layer.scales.data, requires_grad=False)
 
+        layer._sm70tm = None
+        if (
+            SM70_AWQ_BACKEND == "turbomind"
+            and not current_platform.has_device_capability(75)
+            and _sm70tm_available()
+        ):
+            group_size = layer.qweight.shape[0] // layer.scales.shape[0]
+            tm_weight, tm_scales, meta = torch.ops._sm70tm.awq_sm70_prepare(
+                layer.qweight, layer.scales, layer.qzeros, group_size, False
+            )
+            k_ld = int(meta[0].item())
+            q_ld = int(meta[1].item())
+            layer._sm70tm = (tm_weight, tm_scales, group_size, k_ld, q_ld)
+            # Release the original AWQ tensors: the turbomind path consumes only
+            # the repacked tensors, and keeping both duplicates weight memory.
+            layer.qweight = torch.nn.Parameter(
+                torch.empty(0, dtype=torch.int32, device=tm_weight.device),
+                requires_grad=False,
+            )
+            layer.qzeros = torch.nn.Parameter(
+                torch.empty(0, dtype=torch.int32, device=tm_weight.device),
+                requires_grad=False,
+            )
+            layer.scales = torch.nn.Parameter(
+                torch.empty(0, dtype=tm_scales.dtype, device=tm_weight.device),
+                requires_grad=False,
+            )
+
     def apply(
         self,
         layer: torch.nn.Module,
@@ -922,6 +965,24 @@ class AutoAWQLinearMethod(BaseAWQLinearMethod):
         pack_factor = self.quant_config.pack_factor
         out_shape = x.shape[:-1] + (qweight.shape[-1] * pack_factor,)
         reshaped_x = x.reshape(-1, x.shape[-1])
+
+        tm = getattr(layer, "_sm70tm", None)
+        if tm is not None:
+            tm_weight, tm_scales, group_size, k_ld, q_ld = tm
+            n_out = tm_weight.shape[1] * pack_factor
+            out = torch.empty(
+                reshaped_x.shape[0],
+                n_out,
+                dtype=reshaped_x.dtype,
+                device=reshaped_x.device,
+            )
+            torch.ops._sm70tm.awq_gemm_sm70_out(
+                out, reshaped_x, tm_weight, tm_scales, group_size, k_ld, q_ld,
+                False,
+            )
+            if bias is not None:
+                out.add_(bias)
+            return out.reshape(x.shape[:-1] + (n_out,))
 
         if not current_platform.has_device_capability(75):
             group_size = reshaped_x.shape[-1] // scales.shape[0]

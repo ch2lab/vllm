@@ -8,7 +8,7 @@ import time
 
 import torch
 
-import vllm._custom_ops  # noqa: register _C ops
+import vllm._custom_ops as ops  # noqa: register _C ops
 import vllm._sm70_turbomind_C  # noqa: register _sm70tm ops
 
 PEAK_BW = 900e9  # V100 HBM2 GB/s
@@ -48,7 +48,7 @@ def run(M, IC, OC):
     ref = (x.float() @ w_fp16.float()).half()
 
     # WMMA path
-    wmma = torch.ops._C.awq_gemm_sm70(x, qw, sc, zp)
+    wmma = ops.awq_gemm_sm70(x, qw, sc, zp, group_size)
     wmma_rel = (wmma.float() - ref.float()).abs().max().item() / (
         ref.float().abs().max().item() + 1e-6)
 
@@ -63,7 +63,7 @@ def run(M, IC, OC):
         wmma.float().abs().max().item() + 1e-6)
 
     bw = bytes_moved(M, IC, OC)
-    t_wmma = timeit(lambda: torch.ops._C.awq_gemm_sm70(x, qw, sc, zp))
+    t_wmma = timeit(lambda: ops.awq_gemm_sm70(x, qw, sc, zp, group_size))
     t_tm = timeit(lambda: torch.ops._sm70tm.awq_gemm_sm70(x, tm_w, tm_s, group_size, k_ld, q_ld))
 
     print(f"  M={M} IC={IC:5d} OC={OC:5d} | "

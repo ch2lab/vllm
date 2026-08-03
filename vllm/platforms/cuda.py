@@ -346,6 +346,10 @@ class CudaPlatformBase(Platform):
             if compilation_config.max_cudagraph_capture_size is None:
                 compilation_config.max_cudagraph_capture_size = 64
 
+            spec_config = vllm_config.speculative_config
+            if spec_config is not None and not spec_config.use_local_argmax_reduction:
+                spec_config.use_local_argmax_reduction = True
+
         if (
             in_wsl()
             and vllm_config.offload_config.uva.cpu_offload_gb > 0
