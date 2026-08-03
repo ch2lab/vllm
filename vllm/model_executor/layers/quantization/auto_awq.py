@@ -72,10 +72,11 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 # SM70 AWQ decode GEMM backend selector (Volta V100).
-#   "wmma"      -> our WMMA 16x16x16 kernel (torch.ops._C.awq_gemm_sm70), default.
-#   "turbomind" -> vendored TurboMind mma.sync.m8n8k4 kernel (torch.ops._sm70tm).
-# Switchable for A/B comparison; turbomind requires the _sm70_turbomind_C ext.
-SM70_AWQ_BACKEND = os.getenv("VLLM_SM70_AWQ_BACKEND", "wmma").lower()
+#   "turbomind" -> vendored TurboMind mma.sync.m8n8k4 kernel (torch.ops._sm70tm),
+#                  default. Falls back to WMMA if the extension is missing.
+#   "wmma"      -> our WMMA 16x16x16 kernel (torch.ops._C.awq_gemm_sm70).
+# Switchable for A/B; turbomind requires the _sm70_turbomind_C ext.
+SM70_AWQ_BACKEND = os.getenv("VLLM_SM70_AWQ_BACKEND", "turbomind").lower()
 
 
 def _sm70tm_available() -> bool:
