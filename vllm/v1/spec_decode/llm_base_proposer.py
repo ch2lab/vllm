@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from vllm.v1.spec_decode.vocab_mapping import VocabMapping
 
 from vllm.distributed.eplb.eplb_state import EplbState
-from vllm.distributed.parallel_state import get_pp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
@@ -45,6 +45,7 @@ from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 from vllm.v1.kv_cache_interface import KVCacheConfig, UniformTypeKVCacheSpecs
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.topk_topp_sampler import (
+    apply_top_k_top_p,
     empty_exponential_noise_like,
     sample_with_exponential_noise,
 )
@@ -469,7 +470,7 @@ class SpecDecodeBaseProposer:
                 temperature=temperature.repeat_interleave(factor, dim=0),
             )
 
-        return compute_probs_and_sample_next_token(
+        return sm70_probs_and_sample_next_token(
             logits, sampling_metadata, self.use_fp64_gumbel
         )
 
@@ -1894,3 +1895,96 @@ def compute_probs_and_sample_next_token(
         greedy_token_ids = probs.argmax(dim=-1)
         next_token_ids = torch.where(is_greedy, greedy_token_ids, next_token_ids)
     return next_token_ids, probs
+
+
+def sm70_probs_and_sample_next_token(
+    logits: torch.Tensor,
+    sampling_metadata: SamplingMetadata,
+    use_fp64_gumbel: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """SM70 MTP probabilistic draft sampling.
+
+    The target rejection sampler compares draft probs against the target's
+    top-k/top-p truncated softmax probs. The draft therefore samples from the
+    same top-k truncated distribution (no top-p by default) so the two
+    distributions share support and the acceptance ratio p/q stays meaningful.
+    Sampling from the full-vocab softmax instead collapses acceptance because
+    drafted tokens frequently fall outside the target's top-k support.
+    """
+    if sampling_metadata.all_greedy:
+        return logits.argmax(dim=-1), logits
+
+    assert sampling_metadata.temperature is not None
+    logits = logits.float()
+
+    temperature = _expand_sampling_param_for_logits(
+        sampling_metadata.temperature,
+        logits.shape[0],
+    )
+    assert temperature is not None
+    is_greedy = None
+    if not sampling_metadata.all_random:
+        is_greedy = temperature < _SAMPLING_EPS
+        temperature = torch.where(is_greedy, 1.0, temperature)
+    logits.div_(temperature.view(-1, 1))
+
+    top_k = _expand_sampling_param_for_logits(
+        sampling_metadata.top_k,
+        logits.shape[0],
+    )
+    # Draft top_p is intentionally not applied when top-k is configured: the
+    # target verification still applies the official top-p policy, and
+    # rejection sampling corrects the final distribution.
+    top_p = _expand_sampling_param_for_logits(
+        sampling_metadata.top_p,
+        logits.shape[0],
+    ) if top_k is None else None
+    logits = apply_top_k_top_p(logits, top_k, top_p)
+    probs = logits.softmax(dim=-1, dtype=torch.float32)
+
+    q = empty_exponential_noise_like(probs, use_fp64_gumbel)
+    if len(sampling_metadata.generators) != probs.shape[0]:
+        q.exponential_()
+    for i, generator in sampling_metadata.generators.items():
+        if i < q.shape[0]:
+            q[i].exponential_(generator=generator)
+    next_token_ids = sample_with_exponential_noise(probs.clone(), q)
+    if not sampling_metadata.all_random:
+        greedy_token_ids = probs.argmax(dim=-1)
+        assert is_greedy is not None
+        next_token_ids = torch.where(is_greedy, greedy_token_ids, next_token_ids)
+    next_token_ids = _sync_draft_token_ids_across_tp(next_token_ids)
+    return next_token_ids, probs
+
+
+def _expand_sampling_param_for_logits(
+    param: torch.Tensor | None,
+    num_logits: int,
+) -> torch.Tensor | None:
+    if param is None or param.numel() == num_logits:
+        return param
+    if param.numel() == 1:
+        return param.expand(num_logits)
+    assert num_logits % param.numel() == 0, (
+        "Draft sampling metadata does not align with draft logits: "
+        f"num_logits={num_logits}, param_shape={tuple(param.shape)}"
+    )
+    return param.repeat_interleave(num_logits // param.numel())
+
+
+def _sync_draft_token_ids_across_tp(
+    next_token_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Make probabilistic draft sampling choose the same token on all TP ranks.
+
+    Draft logits are all-gathered before sampling, so every TP rank keeps the
+    same draft probability rows for rejection sampling. Only the sampled token
+    ids need synchronization; broadcasting full vocab probabilities would add
+    unnecessary communication to the MTP loop.
+    """
+    tp_group = get_tp_group()
+    if tp_group is None or tp_group.world_size == 1:
+        return next_token_ids
+    if not next_token_ids.is_contiguous():
+        next_token_ids = next_token_ids.contiguous()
+    return tp_group.broadcast(next_token_ids, src=0)
