@@ -10,7 +10,7 @@ def main():
     llm = LLM(
         model="/data/models/Qwen3.6-27B-AWQ",
         tensor_parallel_size=2,
-        kv_cache_dtype="float16",
+        kv_cache_dtype="fp8",
         max_model_len=8192,
         gpu_memory_utilization=0.92,
         language_model_only=True,
@@ -19,6 +19,7 @@ def main():
         speculative_config={
             "method": "mtp",
             "num_speculative_tokens": 4,
+            "draft_sample_method": "probabilistic",
         },
     )
     warm = (
@@ -35,7 +36,8 @@ def main():
         "mechanics, and Schrodinger's wave equation. "
     ) * 12
     t0 = time.time()
-    out = llm.generate([prompt], SamplingParams(max_tokens=256, temperature=0))
+    out = llm.generate([prompt], SamplingParams(
+        max_tokens=256, temperature=1.0, top_p=0.95, top_k=20, seed=20260620))
     dt = time.time() - t0
     n_out = len(out[0].outputs[0].token_ids)
     print(f"ACC_PROBE: in=625 out={n_out} total={dt:.2f}s tok/s={n_out / dt:.1f}")
