@@ -321,6 +321,28 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "awq_dequantize(Tensor _kernel, Tensor _scaling_factors, "
       "Tensor _zeros, SymInt split_k_iters, int thx, int thy) -> Tensor");
 
+  // SM70 WMMA fused AWQ GEMM.
+  ops.def(
+      "awq_gemm_sm70(Tensor input, Tensor qweight, Tensor scales, "
+      "Tensor qzeros, SymInt group_size, SymInt split_k_target) -> Tensor");
+
+  // SM70 WMMA flash attention prefill.
+  ops.def(
+      "flash_attn_sm70_prefill(Tensor Q, Tensor K, Tensor V, "
+      "float scale, bool causal) -> Tensor");
+  ops.def(
+      "flash_attn_sm70_prefill_fp8(Tensor Q, Tensor K_fp8, Tensor V_fp8, "
+      "float scale, bool causal, float k_scale, float v_scale) -> Tensor");
+  ops.def(
+      "flash_attn_sm70_prefill_paged(Tensor Q, Tensor kv_cache, "
+      "Tensor block_table, float scale, bool causal, "
+      "int seq_len, float k_scale, float v_scale) -> Tensor");
+  ops.def(
+      "flash_attn_sm70_prefill_paged_batched(Tensor Q, Tensor kv_cache, "
+      "Tensor block_table, Tensor query_start_loc, Tensor seq_lens, "
+      "int num_seqs, int max_query_len, float scale, bool causal, "
+      "float k_scale, float v_scale, int kv_mode) -> Tensor");
+
   // DeepSeek V3 fused A GEMM (SM 9.0+, bf16 only, 1-16 tokens).
   // conditionally compiled so impl registration is in source file
   ops.def(
@@ -737,6 +759,14 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
   // AWQ ops
   ops.impl("awq_gemm", TORCH_BOX(&awq_gemm));
   ops.impl("awq_dequantize", TORCH_BOX(&awq_dequantize));
+  ops.impl("awq_gemm_sm70", TORCH_BOX(&awq_gemm_sm70));
+  ops.impl("flash_attn_sm70_prefill", TORCH_BOX(&flash_attn_sm70_prefill));
+  ops.impl("flash_attn_sm70_prefill_fp8",
+           TORCH_BOX(&flash_attn_sm70_prefill_fp8));
+  ops.impl("flash_attn_sm70_prefill_paged",
+           TORCH_BOX(&flash_attn_sm70_prefill_paged));
+  ops.impl("flash_attn_sm70_prefill_paged_batched",
+           TORCH_BOX(&flash_attn_sm70_prefill_paged_batched));
 
   // DSV3 fused A GEMM: conditionally compiled so impl registration is in
   // source file (dsv3_fused_a_gemm.cu)

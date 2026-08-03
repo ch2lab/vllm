@@ -175,6 +175,36 @@ torch::stable::Tensor awq_dequantize(torch::stable::Tensor _kernel,
                                      int64_t split_k_iters, int64_t thx,
                                      int64_t thy);
 
+torch::stable::Tensor awq_gemm_sm70(torch::stable::Tensor input,
+                                    torch::stable::Tensor qweight,
+                                    torch::stable::Tensor scales,
+                                    torch::stable::Tensor qzeros,
+                                    int64_t group_size, int64_t split_k_target);
+
+torch::stable::Tensor flash_attn_sm70_prefill(torch::stable::Tensor Q,
+                                              torch::stable::Tensor K,
+                                              torch::stable::Tensor V,
+                                              double scale, bool causal);
+
+torch::stable::Tensor flash_attn_sm70_prefill_fp8(torch::stable::Tensor Q,
+                                                   torch::stable::Tensor K_fp8,
+                                                   torch::stable::Tensor V_fp8,
+                                                   double scale, bool causal,
+                                                   double k_scale,
+                                                   double v_scale);
+
+torch::stable::Tensor flash_attn_sm70_prefill_paged(
+    torch::stable::Tensor Q, torch::stable::Tensor kv_cache,
+    torch::stable::Tensor block_table, double scale, bool causal,
+    int64_t seq_len, double k_scale, double v_scale);
+
+torch::stable::Tensor flash_attn_sm70_prefill_paged_batched(
+    torch::stable::Tensor Q, torch::stable::Tensor kv_cache,
+    torch::stable::Tensor block_table, torch::stable::Tensor query_start_loc,
+    torch::stable::Tensor seq_lens, int64_t num_seqs, int64_t max_query_len,
+    double scale, bool causal, double k_scale, double v_scale,
+    int64_t kv_mode);
+
 // DSV3 fused A GEMM: conditionally compiled so declaration and impl
 // registration are in the source file (dsv3_fused_a_gemm.cu)
 

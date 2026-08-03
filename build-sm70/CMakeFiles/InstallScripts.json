@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/data/src/vllm/build-sm70/cmake_install.cmake",
+		"/data/src/vllm/.deps/cutlass-build/cmake_install.cmake",
+		"/data/src/vllm/.deps/cutlass-build/tools/cmake_install.cmake",
+		"/data/src/vllm/.deps/cutlass-build/tools/util/cmake_install.cmake",
+		"/data/src/vllm/build-sm70/vllm-flash-attn/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

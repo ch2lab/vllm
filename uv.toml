@@ -1,0 +1,13 @@
+# 彻底阻止 uv 从 PyPI 拉 cu130 torch/torchaudio/torchvision
+# 所有 torch 系列包强制使用本地 cu128 编译版本
+#
+# 生效条件：在 /data/src/vllm 目录下运行 uv 命令时自动加载
+
+override-dependencies = [
+    "torch @ file:///data/src/pytorch-src/dist/torch-2.13.0a0+gitcf30153-cp312-cp312-linux_x86_64.whl",
+    "nvidia-nccl-cu13 ; python_version == '0'",
+]
+
+# 如果需要 torchaudio/torchvision 也不被覆盖，取消注释：
+# "torchaudio @ file:///data/src/torchaudio-src/dist/torchaudio-2.11.0+cu128-cp312-cp312-linux_x86_64.whl",
+# "torchvision @ file:///data/src/torchvision-src/dist/torchvision-0.28.0+cu128-cp312-cp312-linux_x86_64.whl",

@@ -228,7 +228,7 @@ class AutoAWQConfig(QuantizationConfig):
 
     @classmethod
     def get_min_capability(cls) -> int:
-        return 75
+        return 70
 
     @classmethod
     def get_config_filenames(cls) -> list[str]:
@@ -923,15 +923,21 @@ class AutoAWQLinearMethod(BaseAWQLinearMethod):
         out_shape = x.shape[:-1] + (qweight.shape[-1] * pack_factor,)
         reshaped_x = x.reshape(-1, x.shape[-1])
 
-        # num_tokens >= threshold
-        FP16_MATMUL_HEURISTIC_CONDITION = x.shape[:-1].numel() >= 256
-        # Batch invariant mode requires torch.matmul path
-        # for Triton override
-        if FP16_MATMUL_HEURISTIC_CONDITION or envs.VLLM_BATCH_INVARIANT:
-            out = ops.awq_dequantize(qweight, scales, qzeros, 0, 0, 0)
-            out = torch.matmul(reshaped_x, out)
+        if not current_platform.has_device_capability(75):
+            group_size = reshaped_x.shape[-1] // scales.shape[0]
+            out = ops.awq_gemm_sm70(
+                reshaped_x, qweight, scales, qzeros, group_size
+            )
         else:
-            out = ops.awq_gemm(reshaped_x, qweight, scales, qzeros, pack_factor)
+            # num_tokens >= threshold
+            FP16_MATMUL_HEURISTIC_CONDITION = x.shape[:-1].numel() >= 256
+            # Batch invariant mode requires torch.matmul path
+            # for Triton override
+            if FP16_MATMUL_HEURISTIC_CONDITION or envs.VLLM_BATCH_INVARIANT:
+                out = ops.awq_dequantize(qweight, scales, qzeros, 0, 0, 0)
+                out = torch.matmul(reshaped_x, out)
+            else:
+                out = ops.awq_gemm(reshaped_x, qweight, scales, qzeros, pack_factor)
         if bias is not None:
             out.add_(bias)
         return out.reshape(out_shape)

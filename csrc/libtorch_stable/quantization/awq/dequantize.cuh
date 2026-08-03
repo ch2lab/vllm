@@ -15,7 +15,7 @@ namespace vllm {
 namespace awq {
 
 __device__ uint4 dequantize_s4_to_fp16x2(uint32_t const& source) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 750
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
   assert(false);
 #else
   uint4 result;

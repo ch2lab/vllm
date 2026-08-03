@@ -554,6 +554,170 @@ if hasattr(torch.ops._C, "awq_gemm"):
         ).sum(0)
 
 
+def awq_gemm_sm70(
+    input: torch.Tensor,
+    qweight: torch.Tensor,
+    scales: torch.Tensor,
+    qzeros: torch.Tensor,
+    group_size: int,
+    split_k_target: int = 640,
+) -> torch.Tensor:
+    return torch.ops._C.awq_gemm_sm70(
+        input, qweight, scales, qzeros, group_size, split_k_target
+    )
+
+
+if hasattr(torch.ops._C, "awq_gemm_sm70"):
+
+    @register_fake("_C::awq_gemm_sm70")
+    def _awq_gemm_sm70_fake(
+        input: torch.Tensor,
+        qweight: torch.Tensor,
+        scales: torch.Tensor,
+        qzeros: torch.Tensor,
+        group_size: torch.SymInt,
+        split_k_target: torch.SymInt,
+    ) -> torch.Tensor:
+        return torch.empty(
+            (input.size(0), scales.size(1)),
+            dtype=input.dtype,
+            device=input.device,
+        )
+
+
+def flash_attn_sm70_prefill(
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    scale: float,
+    causal: bool = False,
+) -> torch.Tensor:
+    return torch.ops._C.flash_attn_sm70_prefill(Q, K, V, scale, causal)
+
+
+if hasattr(torch.ops._C, "flash_attn_sm70_prefill"):
+
+    @register_fake("_C::flash_attn_sm70_prefill")
+    def _flash_attn_sm70_prefill_fake(
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        scale: float,
+        causal: bool,
+    ) -> torch.Tensor:
+        return torch.empty_like(Q)
+
+
+def flash_attn_sm70_prefill_fp8(
+    Q: torch.Tensor,
+    K_fp8: torch.Tensor,
+    V_fp8: torch.Tensor,
+    scale: float,
+    causal: bool = False,
+    k_scale: float = 1.0,
+    v_scale: float = 1.0,
+) -> torch.Tensor:
+    return torch.ops._C.flash_attn_sm70_prefill_fp8(
+        Q, K_fp8, V_fp8, scale, causal, k_scale, v_scale
+    )
+
+
+if hasattr(torch.ops._C, "flash_attn_sm70_prefill_fp8"):
+
+    @register_fake("_C::flash_attn_sm70_prefill_fp8")
+    def _flash_attn_sm70_prefill_fp8_fake(
+        Q: torch.Tensor,
+        K_fp8: torch.Tensor,
+        V_fp8: torch.Tensor,
+        scale: float,
+        causal: bool,
+        k_scale: float,
+        v_scale: float,
+    ) -> torch.Tensor:
+        return torch.empty_like(Q)
+
+
+def flash_attn_sm70_prefill_paged(
+    Q: torch.Tensor,
+    kv_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    scale: float,
+    causal: bool = False,
+    seq_len: int = 0,
+    k_scale: float = 1.0,
+    v_scale: float = 1.0,
+) -> torch.Tensor:
+    return torch.ops._C.flash_attn_sm70_prefill_paged(
+        Q, kv_cache, block_table, scale, causal, seq_len, k_scale, v_scale
+    )
+
+
+if hasattr(torch.ops._C, "flash_attn_sm70_prefill_paged"):
+
+    @register_fake("_C::flash_attn_sm70_prefill_paged")
+    def _flash_attn_sm70_prefill_paged_fake(
+        Q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        scale: float,
+        causal: bool,
+        seq_len: int,
+        k_scale: float,
+        v_scale: float,
+    ) -> torch.Tensor:
+        return torch.empty_like(Q)
+
+
+def flash_attn_sm70_prefill_paged_batched(
+    Q: torch.Tensor,
+    kv_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    query_start_loc: torch.Tensor,
+    seq_lens: torch.Tensor,
+    num_seqs: int,
+    max_query_len: int,
+    scale: float,
+    causal: bool = True,
+    k_scale: float = 1.0,
+    v_scale: float = 1.0,
+    kv_mode: int = 0,
+) -> torch.Tensor:
+    return torch.ops._C.flash_attn_sm70_prefill_paged_batched(
+        Q,
+        kv_cache,
+        block_table,
+        query_start_loc,
+        seq_lens,
+        num_seqs,
+        max_query_len,
+        scale,
+        causal,
+        k_scale,
+        v_scale,
+        kv_mode,
+    )
+
+
+if hasattr(torch.ops._C, "flash_attn_sm70_prefill_paged_batched"):
+
+    @register_fake("_C::flash_attn_sm70_prefill_paged_batched")
+    def _flash_attn_sm70_prefill_paged_batched_fake(
+        Q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        query_start_loc: torch.Tensor,
+        seq_lens: torch.Tensor,
+        num_seqs: int,
+        max_query_len: int,
+        scale: float,
+        causal: bool,
+        k_scale: float,
+        v_scale: float,
+        kv_mode: int,
+    ) -> torch.Tensor:
+        return torch.empty_like(Q)
+
+
 # gptq
 def gptq_gemm(
     a: torch.Tensor,

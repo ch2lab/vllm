@@ -162,6 +162,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.cutlass import (
     CutlassFP8ScaledMMLinearKernel,
     CutlassInt8ScaledMMLinearKernel,
 )
+from vllm.model_executor.kernels.linear.scaled_mm.dequant_fp16 import (
+    DequantFP16ScaledMMLinearKernel,
+)
 from vllm.model_executor.kernels.linear.scaled_mm.deep_gemm import (
     DeepGemmFp8BlockScaledMMKernel,
 )
@@ -334,6 +337,7 @@ _POSSIBLE_FP8_KERNELS: dict[PlatformEnum, list[type[FP8ScaledMMLinearKernel]]] =
         PerTensorTorchFP8ScaledMMLinearKernel,
         ChannelWiseTorchFP8ScaledMMLinearKernel,
         HummingFP8ScaledMMLinearKernel,
+        DequantFP16ScaledMMLinearKernel,
     ],
     PlatformEnum.ROCM: [
         AiterHipbMMPerTokenFp8ScaledMMLinearKernel,
@@ -366,6 +370,7 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
         MarlinFP8ScaledMMLinearKernel,
         TritonFp8BlockScaledMMKernel,
         HummingFP8ScaledMMLinearKernel,
+        DequantFP16ScaledMMLinearKernel,
     ],
     PlatformEnum.ROCM: [
         AiterFp8BlockScaledMMKernel,

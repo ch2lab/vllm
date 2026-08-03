@@ -142,6 +142,11 @@ def _get_backend_priorities(
                 AttentionBackendEnum.FLASHMLA_SPARSE,
             ]
     else:
+        if device_capability.major == 7:
+            return [
+                AttentionBackendEnum.SM70_WMMA_ATTN,
+                AttentionBackendEnum.TRITON_ATTN,
+            ]
         # SM100f defaults to FlashInfer for TRTLLM causal attention, but its non-causal
         # cutlass path (used for dflash attention) is known to have problems.
         # So prefer FlashAttention when non-causal on SM100f.
@@ -329,6 +334,17 @@ class CudaPlatformBase(Platform):
                 "with multimodal-bidirectional attention."
             )
             scheduler_config.disable_chunked_mm_input = True
+
+        if not cls.has_device_capability(75):
+            compilation_config = vllm_config.compilation_config
+            from vllm.config.compilation import CompilationMode, CUDAGraphMode
+
+            compilation_config.mode = CompilationMode.NONE
+            mode = compilation_config.cudagraph_mode
+            if mode is not None and mode.requires_piecewise_compilation():
+                compilation_config.cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
+            if compilation_config.max_cudagraph_capture_size is None:
+                compilation_config.max_cudagraph_capture_size = 64
 
         if (
             in_wsl()

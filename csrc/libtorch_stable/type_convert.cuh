@@ -91,6 +91,27 @@ struct _typeConvert<torch::headeronly::BFloat16> {
     return __float22bfloat162_rn(x);
   }
 };
+  #else
+// SM70 stub: BF16 not available, but define types so code compiles
+template <>
+struct _typeConvert<torch::headeronly::BFloat16> {
+  static constexpr bool exists = false;
+  using hip_type = __half;
+  using packed_hip_type = __half2;
+
+  __device__ static __forceinline__ float convert(hip_type x) {
+    return __half2float(x);
+  }
+  __device__ static __forceinline__ float2 convert(packed_hip_type x) {
+    return __half22float2(x);
+  }
+  __device__ static __forceinline__ hip_type convert(float x) {
+    return __float2half_rn(x);
+  }
+  __device__ static __forceinline__ packed_hip_type convert(float2 x) {
+    return __float22half2_rn(x);
+  }
+};
   #endif  // (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) ||
           // defined(USE_ROCM)
 #endif    // defined(USE_ROCM) || (defined(CUDA_VERSION) && (CUDA_VERSION >=

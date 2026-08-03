@@ -262,14 +262,14 @@ void reshape_and_cache_nvfp4_dispatch(torch::stable::Tensor& key,
       key.get_device_index());
   const cudaStream_t stream = get_current_cuda_stream();
 
-  // SM100 trtllm-gen expects swizzled V scales; SM120 FlashInfer FA2 expects
-  // linear V scales.  Detect SM version at runtime.
+  // SM100 trtllm-gen expects swizzled V scales; SM120 FlashInfer FA2 and
+  // the SM70 WMMA attention kernel expect linear V scales.
   int major = 0, minor = 0;
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor,
                          key.get_device_index());
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor,
                          key.get_device_index());
-  const bool swizzle_v_scale = (major * 10 + minor) < 120;
+  const bool swizzle_v_scale = (major == 10);
 
   VLLM_STABLE_DISPATCH_HALF_TYPES(
       key.scalar_type(), "reshape_and_cache_nvfp4", [&] {

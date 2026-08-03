@@ -1,0 +1,509 @@
+{
+  "T01": {
+    "model": "4B",
+    "kv": "FP16",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1909.1,
+    "decode": 59.3
+  },
+  "T02": {
+    "model": "4B",
+    "kv": "FP8",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1838.4,
+    "decode": 57.7
+  },
+  "T03": {
+    "model": "4B",
+    "kv": "INT4",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1602.7,
+    "decode": 50.7
+  },
+  "T05": {
+    "model": "4B-AWQ",
+    "kv": "FP16",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1686.3,
+    "decode": 58.5
+  },
+  "T06": {
+    "model": "4B-AWQ",
+    "kv": "FP8",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1629.0,
+    "decode": 56.3
+  },
+  "T07": {
+    "model": "4B-AWQ",
+    "kv": "INT4",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1480.5,
+    "decode": 50.1
+  },
+  "T13": {
+    "model": "27B-AWQ",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 725.7,
+    "decode": 24.2
+  },
+  "T14": {
+    "model": "27B-AWQ",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 708.7,
+    "decode": 23.6
+  },
+  "T15": {
+    "model": "27B-AWQ",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 691.8,
+    "decode": 21.3
+  },
+  "T21": {
+    "model": "27B-AWQ",
+    "kv": "FP16",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 406.8,
+    "decode": 12.5
+  },
+  "T22": {
+    "model": "27B-AWQ",
+    "kv": "FP8",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 397.0,
+    "decode": 12.3
+  },
+  "T23": {
+    "model": "27B-AWQ",
+    "kv": "INT4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 387.2,
+    "decode": 11.6
+  },
+  "T04": {
+    "model": "4B",
+    "kv": "NVFP4",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1301.6,
+    "decode": 52.0
+  },
+  "T08": {
+    "model": "4B-AWQ",
+    "kv": "NVFP4",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 1185.2,
+    "decode": 52.0
+  },
+  "T09": {
+    "model": "4B-FP8",
+    "kv": "FP16",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=996181) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T10": {
+    "model": "4B-FP8",
+    "kv": "FP8",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=996880) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T11": {
+    "model": "4B-FP8",
+    "kv": "INT4",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=997643) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T12": {
+    "model": "4B-FP8",
+    "kv": "NVFP4",
+    "parallel": "TP1",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=998389) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T16": {
+    "model": "27B-AWQ",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 555.2,
+    "decode": 21.9
+  },
+  "T17": {
+    "model": "27B-AWQ-MTP",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 685.9,
+    "decode": 62.1
+  },
+  "T18": {
+    "model": "27B-AWQ-MTP",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 668.7,
+    "decode": 59.2
+  },
+  "T19": {
+    "model": "27B-AWQ-MTP",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 653.4,
+    "decode": 15.4
+  },
+  "T20": {
+    "model": "27B-AWQ-MTP",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "FAIL",
+    "error": "(APIServer pid=1004348) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T24": {
+    "model": "27B-AWQ",
+    "kv": "NVFP4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 304.3,
+    "decode": 11.8
+  },
+  "T25": {
+    "model": "35B-A3B-AWQ",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1006691) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T26": {
+    "model": "35B-A3B-AWQ",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1007795) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T27": {
+    "model": "35B-A3B-AWQ",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1008960) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T28": {
+    "model": "35B-A3B-AWQ",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1010202) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T29": {
+    "model": "35B-A3B-AWQ",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "FAIL",
+    "error": "(APIServer pid=1011295) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T30": {
+    "model": "35B-A3B-AWQ",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "FAIL",
+    "error": "(APIServer pid=1012658) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T31": {
+    "model": "35B-A3B-AWQ",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "FAIL",
+    "error": "(APIServer pid=1013762) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T32": {
+    "model": "35B-A3B-AWQ",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "FAIL",
+    "error": "(APIServer pid=1014927) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T33": {
+    "model": "35B-A3B-AWQ",
+    "kv": "FP16",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1016024) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T34": {
+    "model": "35B-A3B-AWQ",
+    "kv": "FP8",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1017035) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T35": {
+    "model": "35B-A3B-AWQ",
+    "kv": "INT4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1018053) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T36": {
+    "model": "35B-A3B-AWQ",
+    "kv": "NVFP4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1019086) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T37": {
+    "model": "27B-FP8",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1020117) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T38": {
+    "model": "27B-FP8",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1021165) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T39": {
+    "model": "27B-FP8",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1022177) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T40": {
+    "model": "27B-FP8",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1023354) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T41": {
+    "model": "27B-FP8",
+    "kv": "FP16",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1024280) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T42": {
+    "model": "27B-FP8",
+    "kv": "FP8",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1025166) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T43": {
+    "model": "27B-FP8",
+    "kv": "INT4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1026070) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T44": {
+    "model": "27B-FP8",
+    "kv": "NVFP4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1026966) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T45": {
+    "model": "Ornith-35B-FP8",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1027858) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T46": {
+    "model": "Ornith-35B-FP8",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1029077) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T47": {
+    "model": "Ornith-35B-FP8",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1030135) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T48": {
+    "model": "Ornith-35B-FP8",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1031176) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T49": {
+    "model": "Ornith-35B-FP8",
+    "kv": "FP16",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1032216) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T50": {
+    "model": "Ornith-35B-FP8",
+    "kv": "FP8",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1033199) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T51": {
+    "model": "Ornith-35B-FP8",
+    "kv": "INT4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1034237) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T52": {
+    "model": "Ornith-35B-FP8",
+    "kv": "NVFP4",
+    "parallel": "PP2",
+    "mtp": false,
+    "status": "FAIL",
+    "error": "(APIServer pid=1035271) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "T53": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 821.5,
+    "decode": 8.5
+  },
+  "T54": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 797.7,
+    "decode": 8.2
+  },
+  "T55": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 782.1,
+    "decode": 7.9
+  },
+  "T56": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": false,
+    "status": "OK",
+    "prefill": 608.7,
+    "decode": 8.2
+  },
+  "T57": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "FP16",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 781.4,
+    "decode": 27.8
+  },
+  "T58": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "FP8",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 757.6,
+    "decode": 27.5
+  },
+  "T59": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "INT4",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 742.2,
+    "decode": 9.1
+  },
+  "T60": {
+    "model": "27B-NVFP4-MTP",
+    "kv": "NVFP4",
+    "parallel": "TP2",
+    "mtp": true,
+    "status": "OK",
+    "prefill": 580.4,
+    "decode": 7.5
+  }
+}
