@@ -314,7 +314,8 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
                 # blocks and merges via log-sum-exp, avoiding the O(KV)
                 # single-block scan that dominates long-context decode.
                 max_seq_len = attn_metadata.max_seq_len
-                target_seg = 1024
+                # Cap partitions at the kernel's MAX_PARTITIONS buffer.
+                target_seg = max(1024, (max_seq_len + 15) // 16)
                 num_partitions = max(
                     1, (max_seq_len + target_seg - 1) // target_seg
                 )
