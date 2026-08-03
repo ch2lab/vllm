@@ -346,7 +346,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "flash_attn_sm70_decode_partitioned(Tensor Q, Tensor kv_cache, "
       "Tensor block_table, Tensor query_start_loc, Tensor seq_lens, "
       "int max_query_len, int num_seqs, int num_partitions, float scale, "
-      "float k_scale, float v_scale, int kv_mode) -> Tensor");
+      "float k_scale, float v_scale, int kv_mode, int xqa) -> Tensor");
 
   // DeepSeek V3 fused A GEMM (SM 9.0+, bf16 only, 1-16 tokens).
   // conditionally compiled so impl registration is in source file

@@ -321,7 +321,7 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
                 O = torch.ops._C.flash_attn_sm70_decode_partitioned(
                     q, kv_cache_u8, block_table, query_start_loc, seq_lens,
                     max_query_len, num_seqs, num_partitions, self.scale,
-                    k_scale, v_scale, kv_mode,
+                    k_scale, v_scale, kv_mode, 1,
                 )
             else:
                 O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(

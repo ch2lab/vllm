@@ -263,7 +263,8 @@ void flash_attn_sm70_paged_kernel(
     int block_size, int max_blocks, float k_scale, float v_scale,
     int64_t stride_block, int64_t stride_head, int64_t stride_slot,
     int num_partitions, half* __restrict__ o_partial,
-    float* __restrict__ max_partial, float* __restrict__ sum_partial) {
+    float* __restrict__ max_partial, float* __restrict__ sum_partial,
+    int xqa) {
 
   constexpr int HD = HEAD_DIM;
   constexpr int K_TILES = HD / 16;       // QK reduction tiles
@@ -289,9 +290,17 @@ void flash_attn_sm70_paged_kernel(
     Sq = query_start_loc[seq + 1] - q_base;
     kv_len = seq_lens_arr[seq];
     bt = block_table + seq * max_blocks;
-    q_ptr = Q + (q_base * num_heads + head_idx) * HD;
-    o_ptr = O + (q_base * num_heads + head_idx) * HD;
-    q_row_stride = num_heads * HD;
+    if (xqa) {
+      // head_idx is the KV head; process q_per_kv query heads sharing it.
+      const int q_per_kv = num_heads / num_kv_heads;
+      q_ptr = Q + (q_base * num_heads + head_idx * q_per_kv) * HD;
+      o_ptr = O + (q_base * num_heads + head_idx * q_per_kv) * HD;
+      q_row_stride = HD;
+    } else {
+      q_ptr = Q + (q_base * num_heads + head_idx) * HD;
+      o_ptr = O + (q_base * num_heads + head_idx) * HD;
+      q_row_stride = num_heads * HD;
+    }
   } else {
     Sq = Sq_arg;
     kv_len = seq_len_arg;
@@ -302,7 +311,8 @@ void flash_attn_sm70_paged_kernel(
   }
   if (q_start >= Sq) return;
   const int warp_id = threadIdx.x / 32;
-  const int kv_head_idx = head_idx / (num_heads / num_kv_heads);
+  const int kv_head_idx =
+      xqa ? head_idx : (head_idx / (num_heads / num_kv_heads));
   const half* q_tile = q_ptr + q_start * q_row_stride;
   half* o_tile = o_ptr + q_start * q_row_stride;
 
@@ -324,8 +334,15 @@ void flash_attn_sm70_paged_kernel(
   // Load Q tile
   for (int idx = threadIdx.x; idx < BM * HD; idx += 128) {
     int m = idx / HD, d = idx % HD;
-    int gq = q_start + m;
-    sQ[m][d] = (gq < Sq) ? q_tile[m * q_row_stride + d] : __float2half(0.0f);
+    if (xqa) {
+      // m is the query-head offset within the shared KV-head group; all
+      // q_per_kv heads query the same (single) token position.
+      const int q_per_kv = num_heads / num_kv_heads;
+      sQ[m][d] = (m < q_per_kv) ? q_tile[m * HD + d] : __float2half(0.0f);
+    } else {
+      int gq = q_start + m;
+      sQ[m][d] = (gq < Sq) ? q_tile[m * q_row_stride + d] : __float2half(0.0f);
+    }
   }
   if (threadIdx.x < BM) {
     s_max[threadIdx.x] = -1e30f;
@@ -465,8 +482,8 @@ void flash_attn_sm70_paged_kernel(
     for (int idx = threadIdx.x; idx < BM * BN; idx += 128) {
       int m = idx / BN, n = idx % BN;
       float val = sS_tmp[n / 16][m][n % 16] * scale;
-      if (causal && (kv_start + n > q_offset + q_start + m)) val = -1e30f;
-      if (n >= actual_bn) val = -1e30f;
+      if (causal && (kv_start + n > q_offset + q_start + (xqa ? 0 : m)))
+        val = -1e30f;
       sS[m][n] = val;
     }
     __syncthreads();
@@ -623,26 +640,39 @@ void flash_attn_sm70_paged_kernel(
 
   for (int idx = threadIdx.x; idx < BM * HD; idx += 128) {
     int m = idx / HD, d = idx % HD;
-    int gq = q_start + m;
-    if (gq < Sq) {
-      float sum = s_sum[m];
-      o_tile[m * q_row_stride + d] =
-          __float2half(sum > 0.0f ? sO[m][d] / sum : 0.0f);
+    if (xqa) {
+      const int q_per_kv = num_heads / num_kv_heads;
+      if (m < q_per_kv) {
+        float sum = s_sum[m];
+        o_tile[m * HD + d] =
+            __float2half(sum > 0.0f ? sO[m][d] / sum : 0.0f);
+      }
+    } else {
+      int gq = q_start + m;
+      if (gq < Sq) {
+        float sum = s_sum[m];
+        o_tile[m * q_row_stride + d] =
+            __float2half(sum > 0.0f ? sO[m][d] / sum : 0.0f);
+      }
     }
   }
 
   if (num_partitions > 1) {
     // Write unscaled partial (out, max, sum) for the log-sum-exp merge kernel.
-    const int pidx = (seq * num_partitions + partition_idx) * num_heads + head_idx;
+    const int part_heads = xqa ? num_kv_heads : num_heads;
+    const int pidx =
+        (seq * num_partitions + partition_idx) * part_heads + head_idx;
     half* op = o_partial + (int64_t)pidx * BM * HD;
     float* mp = max_partial + (int64_t)pidx * BM;
     float* sp = sum_partial + (int64_t)pidx * BM;
+    const int q_per_kv = num_heads / num_kv_heads;
     for (int idx = threadIdx.x; idx < BM * HD; idx += 128) {
       int m = idx / HD, d = idx % HD;
-      if (q_start + m < Sq) op[m * HD + d] = __float2half(sO[m][d]);
+      if (xqa ? (m < q_per_kv) : (q_start + m < Sq))
+        op[m * HD + d] = __float2half(sO[m][d]);
     }
     for (int m = threadIdx.x; m < BM; m += 128)
-      if (q_start + m < Sq) {
+      if (xqa ? (m < q_per_kv) : (q_start + m < Sq)) {
         mp[m] = s_max[m];
         sp[m] = s_sum[m];
       }
@@ -656,7 +686,8 @@ void flash_attn_sm70_decode_merge_kernel(
     const float* __restrict__ sum_partial,// [num_seqs*P, H, BM]
     const int* __restrict__ query_start_loc,  // [B+1]
     half* __restrict__ O,                 // [total_q, H, HD]
-    int num_heads, int num_partitions, int BM, int HD) {
+    int num_heads, int num_kv_heads, int num_partitions, int BM, int HD,
+    int xqa) {
   const int seq = blockIdx.z;
   const int head_idx = blockIdx.y;
   const int q_tile_idx = blockIdx.x;
@@ -664,6 +695,37 @@ void flash_attn_sm70_decode_merge_kernel(
   const int q_base = query_start_loc[seq];
   const int Sq = query_start_loc[seq + 1] - q_base;
   if (q_start >= Sq) return;
+
+  if (xqa) {
+    // XQA: this block produces one query head. Its partial lives under the
+    // shared KV head, at row m = head_idx % q_per_kv.
+    const int q_per_kv = num_heads / num_kv_heads;
+    const int kv_head = head_idx / q_per_kv;
+    const int m = head_idx % q_per_kv;
+    const int gq = q_start;
+    float global_max = -1e30f;
+    int pidx[MAX_PARTITIONS];
+    for (int p = 0; p < num_partitions; p++) {
+      pidx[p] = (seq * num_partitions + p) * num_kv_heads + kv_head;
+      global_max = fmaxf(global_max, max_partial[pidx[p] * BM + m]);
+    }
+    float den = 0.0f;
+    float w[MAX_PARTITIONS];
+    for (int p = 0; p < num_partitions; p++) {
+      w[p] = __expf(max_partial[pidx[p] * BM + m] - global_max);
+      den += w[p] * sum_partial[pidx[p] * BM + m];
+    }
+    const float inv = den > 0.0f ? 1.0f / den : 0.0f;
+    half* o = O + ((int64_t)(q_base + gq) * num_heads + head_idx) * HD;
+    for (int d = 0; d < HD; d++) {
+      float num_d = 0.0f;
+      for (int p = 0; p < num_partitions; p++)
+        num_d += w[p] * __half2float(
+            o_partial[((int64_t)pidx[p] * BM + m) * HD + d]);
+      o[d] = __float2half(num_d * inv);
+    }
+    return;
+  }
 
   for (int gm = 0; gm < BM; gm++) {
     const int gq = q_start + gm;
@@ -702,7 +764,7 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
     torch::stable::Tensor block_table, torch::stable::Tensor query_start_loc,
     torch::stable::Tensor seq_lens, int64_t max_query_len, int64_t num_seqs,
     int64_t num_partitions, double scale, double k_scale, double v_scale,
-    int64_t kv_mode) {
+    int64_t kv_mode, int64_t xqa) {
   int total_q = Q.size(0);
   int H = Q.size(1);
   int head_dim = Q.size(2);
@@ -713,11 +775,12 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
   if (mode == 0) mode = (kv_cache.scalar_type() != Q.scalar_type()) ? 1 : 0;
   const int BM = vllm::sm70_attn::BM;
   const int P = (int)num_partitions;
+  const int part_heads = (int)xqa ? num_kv_heads : H;
 
   const torch::stable::accelerator::DeviceGuard device_guard(
       Q.get_device_index());
 
-  const int64_t total_partial = (int64_t)num_seqs * P * H * BM;
+  const int64_t total_partial = (int64_t)num_seqs * P * part_heads * BM;
   auto o_partial = torch::stable::empty(
       {total_partial, head_dim}, Q.scalar_type(), std::nullopt, Q.device());
   auto max_partial = torch::stable::empty(
@@ -729,7 +792,7 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
   auto O = torch::stable::empty({total_q, H, head_dim}, Q.scalar_type(),
                                 std::nullopt, Q.device());
 
-  dim3 grid((max_query_len + BM - 1) / BM, H, num_seqs * P);
+  dim3 grid((max_query_len + BM - 1) / BM, part_heads, num_seqs * P);
   dim3 mgrid((max_query_len + BM - 1) / BM, H, num_seqs);
   const cudaStream_t stream = get_current_cuda_stream();
 
@@ -746,14 +809,15 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
         block_size, max_blocks, (float)k_scale, (float)v_scale, \
         kv_cache.stride(0), kv_cache.stride(1), kv_cache.stride(2), \
         P, reinterpret_cast<half*>(o_partial.mutable_data_ptr<torch::headeronly::Half>()), \
-        max_partial.mutable_data_ptr<float>(), sum_partial.mutable_data_ptr<float>()); \
+        max_partial.mutable_data_ptr<float>(), sum_partial.mutable_data_ptr<float>(), \
+        (int)xqa); \
     vllm::sm70_attn::flash_attn_sm70_decode_merge_kernel \
         <<<mgrid, 128, 0, stream>>>( \
         reinterpret_cast<const half*>(o_partial.mutable_data_ptr<torch::headeronly::Half>()), \
         max_partial.mutable_data_ptr<float>(), sum_partial.mutable_data_ptr<float>(), \
         query_start_loc.mutable_data_ptr<int>(), \
         reinterpret_cast<half*>(O.mutable_data_ptr<torch::headeronly::Half>()), \
-        H, P, BM, HD_VAL)
+        H, num_kv_heads, P, BM, HD_VAL, (int)xqa)
 
   if (head_dim == 128) {
     if (mode == 2) { LAUNCH_PARTED(2, 128); }
@@ -804,7 +868,7 @@ torch::stable::Tensor flash_attn_sm70_prefill_paged(
         Sq, (int)seq_len, H, num_kv_heads, (float)scale, causal, \
         block_size, max_blocks, (float)k_scale, (float)v_scale, \
         kv_cache.stride(0), kv_cache.stride(1), kv_cache.stride(2), \
-        1, nullptr, nullptr, nullptr);
+        1, nullptr, nullptr, nullptr, 0);
 
   if (head_dim == 128) {
     if (fp8) { LAUNCH_PAGED_KERNEL(1, 128) }
@@ -856,7 +920,7 @@ torch::stable::Tensor flash_attn_sm70_prefill_paged_batched(
         0, 0, H, num_kv_heads, (float)scale, causal, \
         block_size, max_blocks, (float)k_scale, (float)v_scale, \
         kv_cache.stride(0), kv_cache.stride(1), kv_cache.stride(2), \
-        1, nullptr, nullptr, nullptr);
+        1, nullptr, nullptr, nullptr, 0);
 
   #define DISPATCH_BATCHED(HD_VAL) \
     if (mode == 2) { LAUNCH_BATCHED_KERNEL(2, HD_VAL) } \
