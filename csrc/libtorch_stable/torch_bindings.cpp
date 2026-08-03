@@ -342,6 +342,11 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor block_table, Tensor query_start_loc, Tensor seq_lens, "
       "int num_seqs, int max_query_len, float scale, bool causal, "
       "float k_scale, float v_scale, int kv_mode) -> Tensor");
+  ops.def(
+      "flash_attn_sm70_decode_partitioned(Tensor Q, Tensor kv_cache, "
+      "Tensor block_table, Tensor query_start_loc, Tensor seq_lens, "
+      "int max_query_len, int num_seqs, int num_partitions, float scale, "
+      "float k_scale, float v_scale, int kv_mode) -> Tensor");
 
   // DeepSeek V3 fused A GEMM (SM 9.0+, bf16 only, 1-16 tokens).
   // conditionally compiled so impl registration is in source file
@@ -767,6 +772,8 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
            TORCH_BOX(&flash_attn_sm70_prefill_paged));
   ops.impl("flash_attn_sm70_prefill_paged_batched",
            TORCH_BOX(&flash_attn_sm70_prefill_paged_batched));
+  ops.impl("flash_attn_sm70_decode_partitioned",
+           TORCH_BOX(&flash_attn_sm70_decode_partitioned));
 
   // DSV3 fused A GEMM: conditionally compiled so impl registration is in
   // source file (dsv3_fused_a_gemm.cu)

@@ -205,6 +205,13 @@ torch::stable::Tensor flash_attn_sm70_prefill_paged_batched(
     double scale, bool causal, double k_scale, double v_scale,
     int64_t kv_mode);
 
+torch::stable::Tensor flash_attn_sm70_decode_partitioned(
+    torch::stable::Tensor Q, torch::stable::Tensor kv_cache,
+    torch::stable::Tensor block_table, torch::stable::Tensor query_start_loc,
+    torch::stable::Tensor seq_lens, int64_t max_query_len, int64_t num_seqs,
+    int64_t num_partitions, double scale, double k_scale, double v_scale,
+    int64_t kv_mode);
+
 // DSV3 fused A GEMM: conditionally compiled so declaration and impl
 // registration are in the source file (dsv3_fused_a_gemm.cu)
 

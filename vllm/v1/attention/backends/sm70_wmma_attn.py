@@ -309,20 +309,26 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
             # Host copies of the scales avoid device syncs during capture.
             k_scale = getattr(layer, "_k_scale_cpu", layer._k_scale).item()
             v_scale = getattr(layer, "_v_scale_cpu", layer._v_scale).item()
-            O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(
-                q,
-                kv_cache_u8,
-                block_table,
-                query_start_loc,
-                seq_lens,
-                num_seqs,
-                max_query_len,
-                self.scale,
-                True,
-                k_scale,
-                v_scale,
-                kv_mode,
-            )
+            if max_query_len == 1:
+                # Parallel KV-partition decode: splits the KV span across
+                # blocks and merges via log-sum-exp, avoiding the O(KV)
+                # single-block scan that dominates long-context decode.
+                max_seq_len = attn_metadata.max_seq_len
+                target_seg = 1024
+                num_partitions = max(
+                    1, (max_seq_len + target_seg - 1) // target_seg
+                )
+                O = torch.ops._C.flash_attn_sm70_decode_partitioned(
+                    q, kv_cache_u8, block_table, query_start_loc, seq_lens,
+                    max_query_len, num_seqs, num_partitions, self.scale,
+                    k_scale, v_scale, kv_mode,
+                )
+            else:
+                O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(
+                    q, kv_cache_u8, block_table, query_start_loc, seq_lens,
+                    num_seqs, max_query_len, self.scale,
+                    True, k_scale, v_scale, kv_mode,
+                )
             out.copy_(O)
         else:
             # FP16 path: paged WMMA kernel (handles GQA internally)
