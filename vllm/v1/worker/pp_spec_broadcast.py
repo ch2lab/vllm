@@ -18,6 +18,42 @@ import torch
 import torch.distributed as dist
 
 
+class PPReceiveRound:
+    """One round of the async PP sampled/draft broadcast handoff.
+
+    The non-last rank's ``sample_tokens`` (output-proc thread) builds a round --
+    the receive buffers plus their in-flight ``Work`` handles -- and publishes it
+    atomically; ``execute_model`` (driver thread) consumes it in
+    ``_pp_finish_receive_and_backfill``. Publishing the whole round in a single
+    attribute assignment (instead of publishing each ``Work`` handle separately)
+    removes the partial-publication window where a consumer could wait on a stale
+    handle while the new round's buffers are still being filled. Buffers are owned
+    exclusively by this round: the consumer only reads them after the round's
+    broadcasts have all been waited.
+    """
+
+    __slots__ = ("gen", "recv", "cursor", "draft", "recv_work", "cursor_work",
+                 "draft_work")
+
+    def __init__(
+        self,
+        gen: int,
+        recv: torch.Tensor,
+        cursor: torch.Tensor | None,
+        draft: torch.Tensor | None,
+        recv_work,
+        cursor_work,
+        draft_work,
+    ) -> None:
+        self.gen = gen
+        self.recv = recv
+        self.cursor = cursor
+        self.draft = draft
+        self.recv_work = recv_work
+        self.cursor_work = cursor_work
+        self.draft_work = draft_work
+
+
 def count_valid_sampled_tokens_per_req(sampled_token_ids: torch.Tensor) -> torch.Tensor:
     """Per-request count of valid sampled tokens in a ``[num_reqs, width]`` grid.
 
