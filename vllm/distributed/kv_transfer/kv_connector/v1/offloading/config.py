@@ -110,6 +110,33 @@ def build_offloading_config(
         )
         worker_kv_bytes_per_block = total_gpu_kv_bytes // kv_cache_config.num_blocks
 
+    if parallel_config.pipeline_parallel_size > 1 and worker_kv_bytes_per_block > 0:
+        # PP ranks hold different layer counts (e.g. 38/26), so the per-worker
+        # KV bytes per block differs per rank. The shared CPU offload mmap is
+        # laid out identically on every rank (same num_blocks, row stride and
+        # total size), so unify on the max across the PP group: ranks with
+        # fewer layers leave the tail of their slot unused. The scheduler-side
+        # (driver) construction has no PP group and skips the reduction.
+        from vllm.distributed import get_pp_group
+
+        try:
+            pp_group = get_pp_group()
+        except AssertionError:
+            pp_group = None
+        if pp_group is not None and pp_group.world_size > 1:
+            import torch
+            import torch.distributed as dist
+
+            max_per_block = torch.tensor(
+                [worker_kv_bytes_per_block], dtype=torch.int64, device="cuda"
+            )
+            dist.all_reduce(
+                max_per_block,
+                op=dist.ReduceOp.MAX,
+                group=pp_group.device_group,
+            )
+            worker_kv_bytes_per_block = int(max_per_block.item())
+
     single_group_spec = (
         kv_cache_config.kv_cache_groups[0].kv_cache_spec
         if len(kv_cache_config.kv_cache_groups) == 1
