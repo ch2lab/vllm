@@ -229,9 +229,11 @@ from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 from vllm.v1.worker.pp_spec_broadcast import (
     PPReceiveRound,
     broadcast_sampled_token_ids,
+    count_valid_sampled_tokens_per_req,
     gather_valid_sampled_tokens_per_req,
     num_computed_tokens_drift_correction,
     receive_sampled_token_ids,
+    sanitize_token_zero_col,
     select_latest_sampled_token_per_req,
 )
 from vllm.v1.worker.ubatch_utils import (
@@ -1731,6 +1733,15 @@ class GPUModelRunner(
         self.num_accepted_tokens.gpu[:num_reqs] = self.num_accepted_tokens.gpu[
             :num_reqs
         ].clamp(min=1)
+        # Token-0 ('!') storm defense: garbage logits make the sampler emit 0
+        # at a committed position. The bonus is NOT always the last column
+        # (all-reject rows are [bonus, -1, -1]), so sanitize every column here,
+        # before the grid feeds the next step's inputs on this rank and the
+        # broadcasted one on the other ranks. Legitimate text never contains
+        # token 0.
+        sanitize_token_zero_col(
+            output_token_ids[:num_reqs], self.num_spec_tokens + 1
+        )
 
         if self.cache_config.mamba_cache_mode == "align":
             # Fused GPU postprocess: state copies + per-request accepted-token
@@ -2027,12 +2038,20 @@ class GPUModelRunner(
             # so after a multi-token accept column 0 is the FIRST accepted draft,
             # not the latest committed token the next step must continue from.
             # (Mirrors C4's select_latest on the cpu/non-common path.)
-            self.input_ids.gpu[:num_common_tokens].copy_(
-                select_latest_sampled_token_per_req(
-                    self.input_batch.prev_sampled_token_ids[:num_common_tokens]
-                ),
-                non_blocking=True,
-            )
+            # Rows with zero valid tokens (all -1: discarded/stale) must NOT be
+            # written: select_latest returns -1 for them, and embedding a -1
+            # trips indexSelectSmallIndex (Xid 31 / device-side assert). Keep
+            # the already-copied value for those rows (mirrors the sampler
+            # rank's invalid-req handling, which skips them too).
+            grid = self.input_batch.prev_sampled_token_ids[:num_common_tokens]
+            latest = select_latest_sampled_token_per_req(grid)
+            valid = count_valid_sampled_tokens_per_req(grid) > 0
+            if not valid.all():
+                self.input_ids.gpu[:num_common_tokens][valid] = latest[valid]
+            else:
+                self.input_ids.gpu[:num_common_tokens].copy_(
+                    latest, non_blocking=True
+                )
             return
         # Upload the index tensors asynchronously so the scatter can be non-blocking.
         sampled_tokens_index_tensor = torch.tensor(
@@ -2047,10 +2066,23 @@ class GPUModelRunner(
         latest_sampled_per_req = select_latest_sampled_token_per_req(
             self.input_batch.prev_sampled_token_ids
         )
+        src = latest_sampled_per_req[prev_common_req_indices_tensor]
+        # Rows with zero valid tokens (all -1) must not write -1 into the input
+        # grid (indexSelectSmallIndex assert); keep the already-copied value by
+        # scattering each such row onto itself.
+        valid_rows = (
+            count_valid_sampled_tokens_per_req(
+                self.input_batch.prev_sampled_token_ids
+            )
+            > 0
+        )[prev_common_req_indices_tensor]
+        if not valid_rows.all():
+            old = self.input_ids.gpu[sampled_tokens_index_tensor]
+            src = torch.where(valid_rows, src, old)
         self.input_ids.gpu.scatter_(
             dim=0,
             index=sampled_tokens_index_tensor,
-            src=latest_sampled_per_req[prev_common_req_indices_tensor],
+            src=src,
         )
 
         # Scatter the draft tokens after the sampled tokens are scattered.
@@ -2118,6 +2150,15 @@ class GPUModelRunner(
             neg_in = (chk < 0).sum().item()
             if neg_in:
                 print(f"[PPDBG] NEG_INPUT after scatter: {neg_in} in first64 ids={chk.tolist()}", flush=True)
+            # Cross-rank input comparison: dump this step's input ids (after
+            # sampled+draft scatter) so the last rank's verification inputs can
+            # be compared against the non-last rank's. Only dump the first req.
+            if prev_indices:
+                n_tok = int(cu_num_tokens[0].item())
+                lo = max(0, n_tok - 6)
+                print(f"[PPDBG] INPUT_DUMP rank={get_pp_group().rank_in_group} "
+                      f"req={self.input_batch.req_ids[0][:20]} n_tok={n_tok} "
+                      f"ids={self.input_ids.gpu[lo:n_tok].tolist()}", flush=True)
         else:
             self.input_ids.gpu.scatter_(
                 dim=0,
@@ -2421,6 +2462,13 @@ class GPUModelRunner(
             total_num_scheduled_tokens,
             cu_num_tokens,
         )
+        # Any residual -1 placeholder in the input grid (async spec-decode
+        # stubs that the draft scatter did not cover) would be embedded as a
+        # negative index -> indexSelectSmallIndex device-side assert. Replace
+        # with token 1 so the forward stays in bounds on both PP ranks.
+        neg = self.input_ids.gpu[:total_num_scheduled_tokens] < 0
+        if neg.any():
+            self.input_ids.gpu[:total_num_scheduled_tokens][neg] = 1
 
         if self.uses_mrope:
             # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
@@ -5554,7 +5602,8 @@ class GPUModelRunner(
                     import os as _os
                     if _os.environ.get("PPDBG"):
                         print(f"[PPDBG] CURSOR_ALIGN req={req_id} from={end} to={last} "
-                              f"gap={gap}", flush=True)
+                              f"gap={gap} v={v} pos={pos} "
+                              f"recv={recv[i].tolist()}", flush=True)
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
