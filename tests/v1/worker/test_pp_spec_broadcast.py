@@ -10,12 +10,15 @@ from vllm.v1.worker.pp_spec_broadcast import (
     PPProtocolError,
     align_pp_frame_rows,
     broadcast_pp_frame,
+    ensure_pp_generation_not_fenced,
     next_pp_generation,
     pack_pp_frame,
     pp_row_key,
     unpack_pp_frame,
     validate_pp_frame,
     wait_pp_work,
+    terminate_pp_round,
+    PPReceiveRound,
 )
 
 
@@ -210,6 +213,17 @@ def test_inactive_frame_rows_cannot_align_or_supply_cursor():
     assert align_pp_frame_rows(frame, ["inactive"]) == [-1]
 
 
+def test_row_alignment_normalizes_key_encoding_errors():
+    frame = PPReceiveFrame(
+        1, torch.zeros(1, 16, dtype=torch.int32),
+        torch.tensor([1], dtype=torch.int32), torch.tensor([0], dtype=torch.int32),
+        torch.full((1, 2), -1, dtype=torch.int32),
+        torch.full((1, 1), -1, dtype=torch.int32),
+    )
+    with pytest.raises(PPProtocolError, match="row key"):
+        align_pp_frame_rows(frame, ["x" * 65])
+
+
 def test_pp_work_timeout_has_protocol_context():
     waits = []
 
@@ -227,3 +241,49 @@ def test_pp_work_timeout_has_protocol_context():
             expected_shape=(4, 9), received_shape=(2, 9),
         )
     assert waits == [timedelta(seconds=30)]
+
+
+def test_pp_work_timeout_aborts_work():
+    class Work:
+        def __init__(self):
+            self.aborted = False
+
+        def wait(self, timeout):
+            return False
+
+        def abort(self):
+            self.aborted = True
+
+    work = Work()
+    with pytest.raises(PPProtocolError):
+        wait_pp_work(work, generation=1, rank=0, timeout_seconds=0)
+    assert work.aborted
+
+
+def test_pp_work_exception_aborts_work():
+    class Work:
+        def __init__(self):
+            self.aborted = False
+
+        def wait(self, timeout):
+            raise RuntimeError("transport failed")
+
+        def abort(self):
+            self.aborted = True
+
+    work = Work()
+    with pytest.raises(PPProtocolError, match="transport failed"):
+        wait_pp_work(work, generation=1, rank=0, timeout_seconds=0)
+    assert work.aborted
+
+
+def test_timeout_fences_stale_generation():
+    with pytest.raises(PPProtocolError, match="fenced"):
+        ensure_pp_generation_not_fenced(7, 7)
+    ensure_pp_generation_not_fenced(8, 7)
+
+
+def test_validation_failure_terminates_round():
+    round = PPReceiveRound(1, torch.empty(1, 1), None, None, None, None, None)
+    terminate_pp_round(round)
+    assert round.terminated

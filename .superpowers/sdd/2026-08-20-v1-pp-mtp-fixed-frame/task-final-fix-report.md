@@ -38,3 +38,18 @@ PASS
 The warnings are the existing missing `vllm._version` warning and TorchScript
 deprecation warnings. Full GPU/NCCL and service E2E checks remain unavailable
 because this checkout lacks the compiled `vllm._C_stable_libtorch` extension.
+
+## Final Re-review Fix Wave
+
+- `_pp_timed_out_gen` is consulted before publishing and consuming rounds;
+  stale generations are rejected and terminated rather than reused.
+- Validation failures now terminate the associated round before being surfaced.
+- `wait_pp_work` invokes Work termination on both timeout returns and wait
+  exceptions.
+- Removed the misleading post-rejection inactive-payload mutation.
+- Row-key encoding failures from the public alignment helper are normalized to
+  `PPProtocolError`.
+- Added focused coverage for timeout fencing, round termination, wait exception
+  cleanup, timeout cleanup, and row-key error normalization.
+
+Final focused result: `19 passed, 15 warnings`.

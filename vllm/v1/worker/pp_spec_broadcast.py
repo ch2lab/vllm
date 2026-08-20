@@ -106,8 +106,6 @@ def validate_pp_frame(
     if torch.any(frame.sampled_tokens[inactive] != -1) or torch.any(
             frame.draft_tokens[inactive] != -1):
         raise PPProtocolError("inactive PP frame payloads must be -1")
-    frame.sampled_tokens[inactive] = -1
-    frame.draft_tokens[inactive] = -1
 
 
 def align_pp_frame_rows(
@@ -131,10 +129,13 @@ def align_pp_frame_rows(
             raise PPProtocolError("PP frame contains duplicate active row keys")
         frame_rows[tuple(key)] = row
     discarded = discard_indices or set()
-    return [
-        -1 if i in discarded else frame_rows.get(pp_row_key(req_id), -1)
-        for i, req_id in enumerate(local_req_ids)
-    ]
+    try:
+        return [
+            -1 if i in discarded else frame_rows.get(pp_row_key(req_id), -1)
+            for i, req_id in enumerate(local_req_ids)
+        ]
+    except ValueError as exc:
+        raise PPProtocolError(f"invalid PP row key: {exc}") from exc
 
 
 def wait_pp_work(work, generation: int, rank: int,
@@ -150,21 +151,35 @@ def wait_pp_work(work, generation: int, rank: int,
         context += f", received shape {received_shape}"
     if received_metadata is not None:
         context += f", received metadata {received_metadata}"
-    try:
-        completed = work.wait(timeout=timedelta(seconds=timeout_seconds))
-    except Exception as exc:
-        raise PPProtocolError(
-            f"PP frame receive failed at {context}: {exc}"
-        ) from exc
-    if completed is False:
+    def terminate() -> None:
         abort = getattr(work, "abort", None)
         if callable(abort):
             try:
                 abort()
             except Exception:
                 pass
+
+    try:
+        completed = work.wait(timeout=timedelta(seconds=timeout_seconds))
+    except Exception as exc:
+        terminate()
+        raise PPProtocolError(
+            f"PP frame receive failed at {context}: {exc}"
+        ) from exc
+    if completed is False:
+        terminate()
         raise PPProtocolError(
             f"PP frame receive timed out at {context} after {timeout_seconds}s"
+        )
+
+
+def ensure_pp_generation_not_fenced(
+    generation: int, timed_out_generation: int
+) -> None:
+    if generation <= timed_out_generation:
+        raise PPProtocolError(
+            f"PP frame generation {generation} is fenced after timeout at "
+            f"generation {timed_out_generation}"
         )
 
 
@@ -282,6 +297,10 @@ class PPReceiveRound:
         self.cursor_work = cursor_work
         self.draft_work = draft_work
         self.terminated = False
+
+
+def terminate_pp_round(round: PPReceiveRound) -> None:
+    round.terminated = True
 
 
 def count_valid_sampled_tokens_per_req(sampled_token_ids: torch.Tensor) -> torch.Tensor:

@@ -234,6 +234,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     broadcast_sampled_token_ids,
     count_valid_sampled_tokens_per_req,
     gather_valid_sampled_tokens_per_req,
+    ensure_pp_generation_not_fenced,
     num_computed_tokens_drift_correction,
     pack_pp_frame,
     pp_frame_width,
@@ -245,6 +246,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     unpack_pp_frame,
     validate_pp_frame,
     wait_pp_work,
+    terminate_pp_round,
 )
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
@@ -5359,8 +5361,12 @@ class GPUModelRunner(
                   f"chunked={self._is_all_reqs_chunked_prefill()}", flush=True)
         pp = get_pp_group()
         assert not pp.is_last_rank
+        if self._pp_pending_round is not None:
+            ensure_pp_generation_not_fenced(
+                self._pp_pending_round.gen, self._pp_timed_out_gen)
         self._pp_round_gen += 1
         gen = self._pp_round_gen
+        ensure_pp_generation_not_fenced(gen, self._pp_timed_out_gen)
         num_reqs = self.input_batch.num_reqs
         # Always post one fixed-capacity receive; inactive rows are flagged.
         recv = torch.empty(
@@ -5429,6 +5435,12 @@ class GPUModelRunner(
         self._pp_pending_round = None
         self._pp_round_event.clear()
         wait_gen = round.gen
+        try:
+            ensure_pp_generation_not_fenced(wait_gen, self._pp_timed_out_gen)
+        except PPProtocolError:
+            terminate_pp_round(round)
+            self._pp_pending_round = None
+            raise
         recv = round.recv
         expected_shape = (self.max_num_reqs, pp_frame_width(self.num_spec_tokens))
         if ppdbg:
@@ -5450,7 +5462,7 @@ class GPUModelRunner(
                 },
             )
         except PPProtocolError:
-            round.terminated = True
+            terminate_pp_round(round)
             self._pp_timed_out_gen = wait_gen
             self._pp_pending_round = None
             raise
@@ -5465,6 +5477,8 @@ class GPUModelRunner(
                 num_spec_tokens=self.num_spec_tokens,
             )
         except (ValueError, PPProtocolError) as exc:
+            terminate_pp_round(round)
+            self._pp_timed_out_gen = wait_gen
             raise PPProtocolError(
                 f"PP frame protocol error at generation {wait_gen} on rank "
                 f"{pp.rank}: expected shape {expected_shape}, received shape "
