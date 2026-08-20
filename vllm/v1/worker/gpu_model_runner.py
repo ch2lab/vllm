@@ -651,6 +651,7 @@ class GPUModelRunner(
         # Round counters for the async sampled/draft broadcast handoff. These let
         # PPDBG detect a partial/stale round being consumed.
         self._pp_round_gen = 0
+        self._pp_last_received_generation = 0
         self._pp_launched_gen = -1
         self._pp_waited_gen = -1
         self._pp_waited_draft_ptr: int | None = None
@@ -5441,8 +5442,12 @@ class GPUModelRunner(
             raise
         frame = unpack_pp_frame(round.recv, self.max_num_reqs,
                                 self.num_spec_tokens)
-        validate_pp_frame(frame, expected_generation=wait_gen,
-                          previous_generation=wait_gen - 1)
+        validate_pp_frame(
+            frame,
+            expected_generation=wait_gen,
+            previous_generation=self._pp_last_received_generation,
+        )
+        self._pp_last_received_generation = frame.generation
         expected_keys = [
             pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]
         ]

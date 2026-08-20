@@ -98,7 +98,7 @@ def test_pack_rejects_malformed_shape_and_mixed_devices():
         pack_pp_frame(mixed, max_num_seqs=2, num_spec_tokens=1)
 
 
-def test_frame_generation_must_match_round_and_increase():
+def test_receiver_rejects_repeated_or_out_of_order_generation():
     frame = PPReceiveFrame(
         generation=4,
         row_keys=torch.tensor([1, 2]),
@@ -107,11 +107,18 @@ def test_frame_generation_must_match_round_and_increase():
         sampled_tokens=torch.tensor([[10, 11], [-1, -1]]),
         draft_tokens=torch.tensor([[20], [-1]]),
     )
-    validate_pp_frame(frame, expected_generation=4, previous_generation=3)
+    last_received_generation = 3
+    validate_pp_frame(frame, expected_generation=4,
+                      previous_generation=last_received_generation)
+    last_received_generation = frame.generation
     with pytest.raises(PPProtocolError, match="generation"):
-        validate_pp_frame(frame, expected_generation=5, previous_generation=3)
+        validate_pp_frame(frame, expected_generation=4,
+                          previous_generation=last_received_generation)
     with pytest.raises(PPProtocolError, match="monotonic"):
-        validate_pp_frame(frame, expected_generation=4, previous_generation=4)
+        validate_pp_frame(
+            PPReceiveFrame(3, frame.row_keys, frame.row_flags, frame.cursors,
+                           frame.sampled_tokens, frame.draft_tokens),
+            expected_generation=3, previous_generation=last_received_generation)
 
 
 def test_inactive_rows_are_cleared_and_flags_are_validated():
