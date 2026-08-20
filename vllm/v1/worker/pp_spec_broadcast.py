@@ -183,17 +183,3 @@ def broadcast_sampled_token_ids(
         f"expected 2-D [num_reqs, width], got {tuple(sampled_token_ids.shape)}"
     )
     dist.broadcast(sampled_token_ids, src=src, group=group)
-
-
-def receive_sampled_token_ids(
-    num_reqs: int,
-    width: int,
-    group,
-    src: int,
-    device,
-    dtype: torch.dtype = torch.int32,
-) -> torch.Tensor:
-    """Receive a ``[num_reqs, width]`` sampled-token grid broadcast from ``src``."""
-    recv = torch.empty((num_reqs, width), dtype=dtype, device=device)
-    dist.broadcast(recv, src=src, group=group)
-    return recv

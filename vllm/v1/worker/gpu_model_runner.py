@@ -234,7 +234,6 @@ from vllm.v1.worker.pp_spec_broadcast import (
     gather_valid_sampled_tokens_per_req,
     make_pp_control_header,
     num_computed_tokens_drift_correction,
-    receive_sampled_token_ids,
     sanitize_token_zero_col,
     select_latest_sampled_token_per_req,
 )
@@ -5239,21 +5238,24 @@ class GPUModelRunner(
                   f"data={sampled_token_ids[:2].tolist() if sampled_token_ids.numel() else '[]'}", flush=True)
         pp = get_pp_group()
         assert pp.is_last_rank
+        # Participation header: 1 = real payload follows, 0 = all-chunked-prefill
+        # step (payload is a -1 placeholder that the receiver must not apply).
+        # The header plus the three payload broadcasts are ALWAYS emitted in
+        # fixed order, so every PP round is symmetric on both ranks and no
+        # collective is ever conditional (a conditional send on one rank without
+        # the matching receive on the other is what deadlocks async PP).
+        payload_present = not self._is_all_reqs_chunked_prefill()
         if control_header_enabled():
-            control = make_pp_control_header(
-                not self._is_all_reqs_chunked_prefill()
-            ).to(self.device)
+            control = make_pp_control_header(payload_present).to(self.device)
             broadcast_sampled_token_ids(control, pp.device_group, pp.rank)
-        # Skip for chunked prefill: sampled tokens are dummy
-        # and will be discarded, no need to broadcast.
-        if not self._is_all_reqs_chunked_prefill():
+        width = self.num_spec_tokens + 1
+        if payload_present:
             # The sampler emits a width-1 grid on steps with no scheduled spec
             # tokens (e.g. the first decode after prefill), but the receiver always
             # reads num_spec+1 columns. Pad the missing columns with -1 so the
             # broadcast shapes match on both ranks; otherwise the receiver reads
             # uninitialized buffer garbage in the extra column and commits it as a
             # real token, corrupting the sequence (breaks greedy-equivalence).
-            width = self.num_spec_tokens + 1
             if sampled_token_ids.shape[-1] < width:
                 pad = sampled_token_ids.new_full(
                     (sampled_token_ids.shape[0], width - sampled_token_ids.shape[-1]),
@@ -5264,26 +5266,23 @@ class GPUModelRunner(
             # emit 0 at the bonus column; the 0 then enters the next step's input
             # grid and reproduces, pinning the request in an all-'!' loop forever
             # (observed as deterministic-ish corruption after batch changes under
-            # NVFP4 KV). Replace a bonus-column 0 with the row's last valid
+            # NVFP4 KV). Replace the token-0 entries with the row's last valid
             # non-0 token so the loop cannot self-sustain; the rare legitimate 0
-            # in real text is negligible vs. this failure mode.
-            if width > 1 and sampled_token_ids.numel():
-                last_col = sampled_token_ids[:, -1]
-                if bool((last_col == 0).any()):
-                    bad = (last_col == 0)
-                    for r in bad.nonzero().squeeze(1).tolist():
-                        row = sampled_token_ids[r]
-                        valid = row[row > 0]
-                        if valid.numel():
-                            sampled_token_ids[r, -1] = valid[-1]
-                        else:
-                            sampled_token_ids[r, -1] = -1
-            broadcast_sampled_token_ids(sampled_token_ids, pp.device_group, pp.rank)
-            # Absolute per-request cursor (num_tokens_no_spec) broadcast, so the
-            # non-last rank can force-align its local cursors to the sampler
-            # rank every step. Any skipped C4 backfill (prefill->decode edges,
-            # batch reshuffles) otherwise leaves a permanent offset that
-            # corrupts that request's verification inputs.
+            # in real text is negligible vs. this failure mode. Pure-GPU
+            # vectorized (no per-row Python loop) so prefill-sized grids stay
+            # fast.
+            sanitize_token_zero_col(sampled_token_ids, width)
+        else:
+            sampled_token_ids = sampled_token_ids.new_full(
+                (self.input_batch.num_reqs, width), -1
+            )
+        broadcast_sampled_token_ids(sampled_token_ids, pp.device_group, pp.rank)
+        # Absolute per-request cursor (num_tokens_no_spec) broadcast, so the
+        # non-last rank can force-align its local cursors to the sampler
+        # rank every step. Any skipped C4 backfill (prefill->decode edges,
+        # batch reshuffles) otherwise leaves a permanent offset that
+        # corrupts that request's verification inputs.
+        if payload_present:
             cursors = (
                 torch.from_numpy(
                     self.input_batch.num_tokens_no_spec[: sampled_token_ids.shape[0]]
@@ -5292,7 +5291,12 @@ class GPUModelRunner(
                 .unsqueeze(1)
                 .contiguous()
             )
-            broadcast_sampled_token_ids(cursors, pp.device_group, pp.rank)
+        else:
+            cursors = torch.zeros(
+                (self.input_batch.num_reqs, 1), dtype=torch.int32,
+                device=self.device,
+            )
+        broadcast_sampled_token_ids(cursors, pp.device_group, pp.rank)
 
     def _pp_broadcast_draft_token_ids(self) -> None:
         """Broadcast the proposed draft token ids from the last PP stage.
@@ -5310,8 +5314,9 @@ class GPUModelRunner(
         """
         pp = get_pp_group()
         assert pp.is_last_rank
-        if self._is_all_reqs_chunked_prefill():
-            return
+        # Chunked-prefill steps still broadcast an all--1 placeholder so the
+        # receiver's (always-launched) draft receive stays paired; the header
+        # tells it to discard the placeholder.
         num_reqs = self.input_batch.num_reqs
         width = self.num_spec_tokens
         dt = self._draft_token_ids
@@ -5353,6 +5358,14 @@ class GPUModelRunner(
         self._pp_round_gen += 1
         gen = self._pp_round_gen
         num_reqs = self.input_batch.num_reqs
+        # The header broadcast is launched async alongside the payload
+        # broadcasts and never waited here: the consumer
+        # (_pp_finish_receive_and_backfill) waits it to learn whether the
+        # payload is a real round (header=1) or a chunked-prefill placeholder
+        # (header=0) that must not be applied. Launching all four async and in
+        # fixed order keeps every PP round symmetric -- a synchronous wait here
+        # serialized sample_tokens on a NCCL round-trip per step, which is what
+        # throttled prefill.
         control = None
         control_work = None
         if control_header_enabled():
@@ -5360,22 +5373,6 @@ class GPUModelRunner(
             control_work = torch.distributed.broadcast(
                 control, src=pp.last_rank, group=pp.device_group, async_op=True
             )
-            control_work.wait()
-            if not bool(control.item()):
-                self._pp_launched_gen = gen
-                self._pp_pending_round = PPReceiveRound(
-                    gen, None, None, None, None, None, None,
-                    control, control_work,
-                )
-                self._pp_round_event.set()
-                return
-        if self._is_all_reqs_chunked_prefill():
-            # All-chunked-prefill round: nothing is broadcast (the last rank
-            # skips its send too), so no round is published. The consumer's
-            # chunked branch performs the placeholder bookkeeping instead, so
-            # input_batch is only ever mutated by the consumer thread.
-            self._pp_launched_gen = gen
-            return
         # Broadcast order must match the last rank: sampled grid, cursor, draft.
         recv = torch.empty(
             (num_reqs, self.num_spec_tokens + 1), dtype=torch.int32,
@@ -5443,21 +5440,11 @@ class GPUModelRunner(
         assert not pp.is_last_rank
         ppdbg = os.environ.get("PPDBG")
         num_reqs = self.input_batch.num_reqs
+        # All-chunked-prefill steps must not wait for a round: the producer
+        # (sample_tokens) may not run on such steps, so there is nothing to
+        # publish. Do the placeholder bookkeeping locally (the payload, if any,
+        # is discarded). Real (decode / mixed) steps wait for the round below.
         if self._is_all_reqs_chunked_prefill():
-            if control_header_enabled():
-                # The sender's header, not this rank's discard mask, controls
-                # whether a payload round exists.
-                round = self._pp_pending_round
-                self._pp_pending_round = None
-                self._pp_round_event.clear()
-                if round is not None and round.recv is not None:
-                    raise RuntimeError("PP control header/payload mismatch")
-                self._pp_waited_gen = -1
-                return
-            # All-chunked-prefill round: the producer published no round (the
-            # last rank broadcast nothing either). Drop a stale round
-            # defensively, then do the placeholder bookkeeping this round needs
-            # so the next prompt positions advance.
             self._pp_pending_round = None
             self._pp_round_event.clear()
             discard_req_indices = np.nonzero(
@@ -5510,7 +5497,42 @@ class GPUModelRunner(
         self._pp_pending_round = None
         self._pp_round_event.clear()
         wait_gen = round.gen
+        # The header is the sender's authoritative participation flag: it alone
+        # decides whether this round carries a real payload (header=1) or a
+        # chunked-prefill placeholder (header=0) that must not be applied. The
+        # producer launches it async alongside the payload, so wait for it here
+        # (consumer thread) -- never in the producer.
         recv = round.recv
+        if control_header_enabled():
+            if round.control_work is not None:
+                round.control_work.wait()
+            if not bool(round.control.item()):
+                # Chunked-prefill round: the payload is an all--1 placeholder
+                # (kept for collective symmetry). Drop it and do the placeholder
+                # bookkeeping this round needs so the next prompt positions
+                # advance.
+                discard_req_indices = np.nonzero(
+                    self.discard_request_mask.np[:num_reqs]
+                )[0]
+                discard_req_indices_set = set(discard_req_indices)
+                prev_req_id_to_index: dict[str, int] = {}
+                for i, req_id in enumerate(self.input_batch.req_ids):
+                    if i in discard_req_indices_set:
+                        continue
+                    prev_req_id_to_index[req_id] = i
+                    req_state = self.requests.get(req_id)
+                    if req_state is not None:
+                        req_state.output_token_ids.append(-1)
+                    pos = self.input_batch.num_tokens_no_spec[i]
+                    self.input_batch.is_token_ids[i, pos] = True
+                    self.input_batch.num_tokens_no_spec[i] = pos + 1
+                self.input_batch.prev_req_id_to_index = prev_req_id_to_index
+                self.input_batch.prev_sampled_token_ids = None
+                self._pp_prev_valid_sampled_count = {}
+                self.prev_positions.np[:num_reqs].fill(-1)
+                self._pp_waited_gen = -1
+                self._pp_waited_draft_ptr = None
+                return
         if recv is None:
             self._pp_waited_gen = -1
             return
