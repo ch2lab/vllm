@@ -247,6 +247,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     select_latest_sampled_token_per_req,
     supersede_pp_round,
     unpack_pp_frame,
+    use_fixed_pp_frame,
     validate_pp_frame,
     wait_pp_work,
     terminate_pp_round,
@@ -5246,6 +5247,9 @@ class GPUModelRunner(
         ``[num_reqs, num_spec + 1]`` (accepted drafts + bonus, ``-1``-padded). The
         transport is width-agnostic; the receiver allocates the matching width.
         """
+        if not use_fixed_pp_frame():
+            self._pp_broadcast_prev_sampled_token_ids_legacy(sampled_token_ids)
+            return
         import os
         if os.environ.get("PPDBG"):
             print(f"[PPDBG] SEND shape={tuple(sampled_token_ids.shape)} "
@@ -5310,6 +5314,30 @@ class GPUModelRunner(
             flags[:num_reqs] = 1
         self._pp_pending_pp_sampled = (generation, row_keys, flags, cursors, sampled)
 
+    def _pp_broadcast_prev_sampled_token_ids_legacy(
+        self, sampled_token_ids: torch.Tensor
+    ) -> None:
+        """Use the pre-fixed-frame sampled/cursor transport."""
+        pp = get_pp_group()
+        assert pp.is_last_rank
+        if self._is_all_reqs_chunked_prefill():
+            return
+        width = self.num_spec_tokens + 1
+        if sampled_token_ids.shape[-1] < width:
+            sampled_token_ids = torch.cat(
+                (sampled_token_ids,
+                 sampled_token_ids.new_full(
+                     (sampled_token_ids.shape[0],
+                      width - sampled_token_ids.shape[-1]), -1)),
+                dim=-1,
+            )
+        sanitize_token_zero_col(sampled_token_ids, width)
+        broadcast_sampled_token_ids(sampled_token_ids, pp.device_group, pp.rank)
+        cursors = torch.from_numpy(
+            self.input_batch.num_tokens_no_spec[:sampled_token_ids.shape[0]]
+        ).to(device=self.device, dtype=torch.int32).unsqueeze(1).contiguous()
+        broadcast_sampled_token_ids(cursors, pp.device_group, pp.rank)
+
     def _pp_broadcast_draft_token_ids(self) -> None:
         """Broadcast the proposed draft token ids from the last PP stage.
 
@@ -5324,6 +5352,9 @@ class GPUModelRunner(
         and ``-1``-padded; a None/absent draft broadcasts an all-``-1`` grid so the
         non-last receive never blocks.
         """
+        if not use_fixed_pp_frame():
+            self._pp_broadcast_draft_token_ids_legacy()
+            return
         pp = get_pp_group()
         assert pp.is_last_rank
         generation, row_keys, flags, cursors, sampled = self._pp_pending_pp_sampled
@@ -5333,8 +5364,13 @@ class GPUModelRunner(
         dt = self._draft_token_ids
         if torch.is_tensor(dt) and self.num_spec_tokens:
             num_reqs = self.input_batch.num_reqs
-            draft[:num_reqs, :min(dt.shape[-1], self.num_spec_tokens)] = (
-                dt[:num_reqs, :self.num_spec_tokens].to(torch.int32))
+            active_rows = flags[:num_reqs].bool()
+            if bool(active_rows.any()):
+                draft[:num_reqs, :min(dt.shape[-1], self.num_spec_tokens)][
+                    active_rows
+                ] = dt[:num_reqs, :self.num_spec_tokens][active_rows].to(
+                    torch.int32
+                )
         frame = PPReceiveFrame(generation, row_keys, flags,
                                cursors, sampled, draft)
         packed = pack_pp_frame(frame, self.max_num_reqs, self.num_spec_tokens,
@@ -5348,6 +5384,27 @@ class GPUModelRunner(
             print(f"[PPDBG] SEND_DRAFT reqs={self.input_batch.req_ids} "
                   f"shape={dt_shape} ptr={dt_ptr} vals={dt_vals}", flush=True)
 
+    def _pp_broadcast_draft_token_ids_legacy(self) -> None:
+        pp = get_pp_group()
+        assert pp.is_last_rank
+        if self._is_all_reqs_chunked_prefill():
+            return
+        num_reqs = self.input_batch.num_reqs
+        width = self.num_spec_tokens
+        dt = self._draft_token_ids
+        if torch.is_tensor(dt):
+            dt = dt.to(dtype=torch.int32)
+            if dt.shape[-1] < width:
+                dt = torch.cat(
+                    (dt, dt.new_full((dt.shape[0], width - dt.shape[-1]), -1)),
+                    dim=-1,
+                )
+            dt = dt[:num_reqs, :width].contiguous()
+        else:
+            dt = torch.full((num_reqs, width), -1, dtype=torch.int32,
+                            device=self.device)
+        broadcast_sampled_token_ids(dt, pp.device_group, pp.rank)
+
     def _pp_receive_prev_sampled_token_ids_to_input_batch(self) -> None:
         """Launch non-blocking sampled-token/draft receives and publish the round.
 
@@ -5360,6 +5417,9 @@ class GPUModelRunner(
         broadcast the other rank has not reached yet when async scheduling
         overlaps sample_tokens(N) with execute_model(N+1).
         """
+        if not use_fixed_pp_frame():
+            self._pp_receive_prev_sampled_token_ids_legacy()
+            return
         import os
         if os.environ.get("PPDBG"):
             print(f"[PPDBG] RECV(launch) reqs={self.input_batch.req_ids} "
@@ -5395,6 +5455,67 @@ class GPUModelRunner(
         self._pp_pending_round = round
         self._pp_round_event.set()
 
+    def _pp_promote_legacy_round(self, round: PPReceiveRound) -> None:
+        """Adapt a completed legacy round to the existing apply logic."""
+        assert round.cursor is not None
+        round.recv_work.wait()
+        round.cursor_work.wait()
+        if round.draft_work is not None:
+            round.draft_work.wait()
+        num_reqs = self.input_batch.num_reqs
+        row_keys = torch.zeros(self.max_num_reqs, 16, dtype=torch.int32,
+                               device=self.device)
+        row_keys[:num_reqs] = torch.tensor(
+            [pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]],
+            dtype=torch.int32, device=self.device)
+        flags = torch.zeros(self.max_num_reqs, dtype=torch.int32,
+                            device=self.device)
+        flags[:num_reqs] = 1
+        cursors = torch.zeros(self.max_num_reqs, dtype=torch.int32,
+                              device=self.device)
+        cursors[:num_reqs] = round.cursor.squeeze(1)
+        sampled = torch.full(
+            (self.max_num_reqs, self.num_spec_tokens + 1), -1,
+            dtype=torch.int32, device=self.device)
+        sampled[:num_reqs] = round.recv
+        draft = torch.full((self.max_num_reqs, self.num_spec_tokens), -1,
+                           dtype=torch.int32, device=self.device)
+        if round.draft is not None:
+            draft[:num_reqs] = round.draft
+        frame = PPReceiveFrame(round.gen, row_keys, flags, cursors, sampled, draft)
+        round.recv = pack_pp_frame(
+            frame, self.max_num_reqs, self.num_spec_tokens,
+            round.gen - 1,
+        )
+
+    def _pp_receive_prev_sampled_token_ids_legacy(self) -> None:
+        """Launch the historical three-collective PP receive."""
+        pp = get_pp_group()
+        assert not pp.is_last_rank
+        self._pp_round_gen += 1
+        gen = self._pp_round_gen
+        num_reqs = self.input_batch.num_reqs
+        if self._is_all_reqs_chunked_prefill():
+            self._pp_launched_gen = gen
+            return
+        recv = torch.empty((num_reqs, self.num_spec_tokens + 1),
+                           dtype=torch.int32, device=self.device)
+        recv_work = torch.distributed.broadcast(
+            recv, src=pp.last_rank, group=pp.device_group, async_op=True)
+        cursor = torch.empty((num_reqs, 1), dtype=torch.int32, device=self.device)
+        cursor_work = torch.distributed.broadcast(
+            cursor, src=pp.last_rank, group=pp.device_group, async_op=True)
+        draft = draft_work = None
+        if self.num_spec_tokens:
+            draft = torch.empty((num_reqs, self.num_spec_tokens),
+                                dtype=torch.int32, device=self.device)
+            draft_work = torch.distributed.broadcast(
+                draft, src=pp.last_rank, group=pp.device_group, async_op=True)
+        self._pp_launched_gen = gen
+        self._pp_pending_round = PPReceiveRound(
+            gen, recv, cursor, draft, recv_work, cursor_work, draft_work)
+        self._pp_round_event.set()
+
     def _pp_finish_receive_and_backfill(self) -> None:
         """Apply one received frame with cleanup covering the full path."""
         try:
@@ -5424,6 +5545,36 @@ class GPUModelRunner(
         assert not pp.is_last_rank
         ppdbg = os.environ.get("PPDBG")
         num_reqs = self.input_batch.num_reqs
+        if not use_fixed_pp_frame() and self._is_all_reqs_chunked_prefill():
+            self._pp_pending_round = None
+            self._pp_round_event.clear()
+            discard = set(np.nonzero(self.discard_request_mask.np[:num_reqs])[0])
+            prev_req_id_to_index: dict[str, int] = {}
+            for i, req_id in enumerate(self.input_batch.req_ids):
+                if i in discard:
+                    continue
+                prev_req_id_to_index[req_id] = i
+                req_state = self.requests.get(req_id)
+                if req_state is not None:
+                    req_state.output_token_ids.append(-1)
+                pos = self.input_batch.num_tokens_no_spec[i]
+                self.input_batch.is_token_ids[i, pos] = True
+                self.input_batch.num_tokens_no_spec[i] = pos + 1
+            self.input_batch.prev_req_id_to_index = prev_req_id_to_index
+            self.input_batch.prev_sampled_token_ids = None
+            self._pp_prev_valid_sampled_count = {}
+            self.prev_positions.np[:num_reqs].fill(-1)
+            self._pp_waited_gen = -1
+            self._pp_waited_draft_ptr = None
+            return
+        if num_reqs == 0 and self._pp_pending_round is None:
+            self.input_batch.prev_req_id_to_index = {}
+            self.input_batch.prev_sampled_token_ids = None
+            self._pp_prev_valid_sampled_count = {}
+            self.prev_positions.np[:0].fill(-1)
+            self._pp_waited_gen = -1
+            self._pp_waited_draft_ptr = None
+            return
         # Consume the round published by the previous sample_tokens. The
         # producer never blocks, so the round always arrives; the timeout is
         # only a fail-safe against a stuck producer.
@@ -5452,6 +5603,8 @@ class GPUModelRunner(
             round = self._pp_pending_round
         self._pp_pending_round = None
         self._pp_round_event.clear()
+        if not use_fixed_pp_frame():
+            self._pp_promote_legacy_round(round)
         self._pp_active_round = round
         wait_gen = round.gen
         try:

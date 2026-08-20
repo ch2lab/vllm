@@ -18,6 +18,18 @@ import torch
 import torch.distributed as dist
 
 
+def use_fixed_pp_frame() -> bool:
+    """Return whether the fixed-capacity PP transport is enabled.
+
+    Keep the default fail-closed: only an explicit ``0`` selects the legacy
+    protocol, which avoids accidentally changing the wire format on malformed
+    deployments.
+    """
+    import os
+
+    return os.environ.get("PP_USE_FIXED_FRAME", "1") != "0"
+
+
 class PPProtocolError(RuntimeError):
     """Raised when PP ranks disagree on a fixed-frame protocol invariant."""
 

@@ -18,6 +18,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     validate_pp_frame,
     wait_pp_work,
     terminate_pp_round,
+    use_fixed_pp_frame,
     terminate_fenced_pp_round,
     run_pp_round_application,
     PPReceiveRound,
@@ -29,6 +30,15 @@ from vllm.v1.worker.pp_spec_broadcast import (
 def keys(*req_ids):
     return torch.tensor([pp_row_key(req_id) if req_id else (0,) * 16
                          for req_id in req_ids], dtype=torch.int32)
+
+
+def test_fixed_frame_switch_defaults_on_and_only_zero_disables(monkeypatch):
+    monkeypatch.delenv("PP_USE_FIXED_FRAME", raising=False)
+    assert use_fixed_pp_frame()
+    monkeypatch.setenv("PP_USE_FIXED_FRAME", "0")
+    assert not use_fixed_pp_frame()
+    monkeypatch.setenv("PP_USE_FIXED_FRAME", "false")
+    assert use_fixed_pp_frame()
 
 
 def test_chunked_sender_and_non_chunked_receiver_use_one_collective(monkeypatch):
