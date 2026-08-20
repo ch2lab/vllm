@@ -4006,6 +4006,19 @@ class GPUModelRunner(
             logits,
             sampling_metadata,
         )
+        import os as _os2
+        if _os2.environ.get("PPDBG"):
+            st = sampler_output.sampled_token_ids
+            if st is not None and st.numel():
+                all_minus1 = bool((st == -1).all(dim=1).any())
+                if all_minus1 or _os2.environ.get("PPDBG_ALL"):
+                    nnan = int(torch.isnan(logits).sum()) if logits is not None else -1
+                    ninf = int(torch.isinf(logits).sum()) if logits is not None else -1
+                    lmin = float(logits.min()) if logits is not None else float("nan")
+                    lmax = float(logits.max()) if logits is not None else float("nan")
+                    print(f"[PPDBG] SAMPLE_BAD rows={st.shape} allminus1_rows={int((st==-1).all(dim=1).sum())} "
+                          f"nan={nnan} inf={ninf} lmin={lmin:.3f} lmax={lmax:.3f} "
+                          f"first={st.flatten()[:8].tolist()}", flush=True)
         return sampler_output
 
     def _bookkeeping_sync(
