@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from datetime import timedelta
+
 import pytest
 import torch
 
@@ -170,8 +172,11 @@ def test_duplicate_active_frame_keys_are_rejected():
 
 
 def test_pp_work_timeout_has_protocol_context():
+    waits = []
+
     class NeverReady:
         def wait(self, timeout):
+            waits.append(timeout)
             return False
 
     with pytest.raises(
@@ -182,3 +187,4 @@ def test_pp_work_timeout_has_protocol_context():
             NeverReady(), generation=7, rank=1, timeout_seconds=0,
             expected_shape=(4, 9), received_shape=(2, 9),
         )
+    assert waits == [timedelta(seconds=30)]

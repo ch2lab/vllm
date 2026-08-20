@@ -5427,6 +5427,7 @@ class GPUModelRunner(
         self._pp_round_event.clear()
         wait_gen = round.gen
         recv = round.recv
+        expected_shape = (self.max_num_reqs, 4 + 2 * self.num_spec_tokens + 1)
         if ppdbg:
             stale = wait_gen < self._pp_round_gen - 1
             print(f"[PPDBG] FINISH round_gen={self._pp_round_gen} "
@@ -5437,17 +5438,17 @@ class GPUModelRunner(
                 round.recv_work,
                 generation=wait_gen,
                 rank=pp.rank,
-                expected_shape=tuple(round.recv.shape),
-                received_shape=tuple(round.recv.shape),
+                timeout_seconds=30.0,
+                expected_shape=expected_shape,
+                received_shape=tuple(recv.shape),
                 received_metadata={
-                    "dtype": str(round.recv.dtype),
-                    "device": str(round.recv.device),
+                    "dtype": str(recv.dtype),
+                    "device": str(recv.device),
                 },
             )
         except PPProtocolError:
             self._pp_pending_round = None
             raise
-        expected_shape = (self.max_num_reqs, 4 + 2 * self.num_spec_tokens + 1)
         try:
             frame = unpack_pp_frame(round.recv, self.max_num_reqs,
                                     self.num_spec_tokens)
