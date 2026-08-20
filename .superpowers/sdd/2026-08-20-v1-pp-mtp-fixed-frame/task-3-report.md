@@ -34,4 +34,4 @@ ModuleNotFoundError: No module named 'vllm._C_stable_libtorch'
 
 ## Commit
 
-Pending commit after report generation.
+Implementation commit: `ff1bdfce27` (`fix: make PP row backfill cancellation-safe`).
