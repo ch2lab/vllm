@@ -31,3 +31,41 @@ def test_pp_generation_must_increase():
     assert next_pp_generation(7) == 8
     with pytest.raises(ValueError, match="monotonic"):
         next_pp_generation(7, generation=7)
+
+
+def test_pack_rejects_non_monotonic_frame_generation():
+    frame = PPReceiveFrame(
+        generation=7,
+        row_keys=torch.zeros(2),
+        row_flags=torch.zeros(2),
+        cursors=torch.zeros(2),
+        sampled_tokens=torch.zeros(2, 2),
+        draft_tokens=torch.zeros(2, 1),
+    )
+    with pytest.raises(ValueError, match="monotonic"):
+        pack_pp_frame(frame, max_num_seqs=2, num_spec_tokens=1,
+                      previous_generation=7)
+
+
+def test_pack_rejects_malformed_shape_and_mixed_devices():
+    frame = PPReceiveFrame(
+        generation=1,
+        row_keys=torch.zeros(2),
+        row_flags=torch.zeros(2),
+        cursors=torch.zeros(2),
+        sampled_tokens=torch.zeros(2, 1),
+        draft_tokens=torch.zeros(2, 1),
+    )
+    with pytest.raises(ValueError, match="sampled_tokens.*shape"):
+        pack_pp_frame(frame, max_num_seqs=2, num_spec_tokens=1)
+
+    mixed = PPReceiveFrame(
+        generation=1,
+        row_keys=torch.zeros(2),
+        row_flags=torch.zeros(2),
+        cursors=torch.zeros(2),
+        sampled_tokens=torch.zeros(2, 2),
+        draft_tokens=torch.zeros(2, 1, device="meta"),
+    )
+    with pytest.raises(ValueError, match="draft_tokens.*device"):
+        pack_pp_frame(mixed, max_num_seqs=2, num_spec_tokens=1)

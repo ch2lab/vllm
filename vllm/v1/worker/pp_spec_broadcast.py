@@ -14,9 +14,10 @@ Kept in a CUDA-free module so the shape/transport logic is unit-testable over a
 plain gloo CPU group.
 """
 
+from dataclasses import dataclass
+
 import torch
 import torch.distributed as dist
-from dataclasses import dataclass
 
 
 @dataclass
@@ -33,8 +34,9 @@ class PPReceiveFrame:
     def __eq__(self, other) -> bool:
         if not isinstance(other, PPReceiveFrame):
             return NotImplemented
-        return (self.generation == other.generation and
-                all(torch.equal(a, b) for a, b in zip(self._tensors(), other._tensors())))
+        return self.generation == other.generation and all(
+            torch.equal(a, b) for a, b in zip(self._tensors(), other._tensors())
+        )
 
     def _tensors(self):
         return (self.row_keys, self.row_flags, self.cursors,
@@ -49,9 +51,25 @@ def next_pp_generation(previous: int, generation: int | None = None) -> int:
     return candidate
 
 
-def pack_pp_frame(frame: PPReceiveFrame, max_num_seqs: int,
-                  num_spec_tokens: int) -> torch.Tensor:
+def pack_pp_frame(
+    frame: PPReceiveFrame,
+    max_num_seqs: int,
+    num_spec_tokens: int,
+    previous_generation: int | None = None,
+) -> torch.Tensor:
     """Pack a frame into one fixed ``[max_num_seqs, width]`` int32 tensor."""
+    if previous_generation is not None:
+        next_pp_generation(previous_generation, frame.generation)
+    tensors = frame._tensors()
+    device = tensors[0].device
+    for name, tensor in zip(
+        ("row_keys", "row_flags", "cursors", "sampled_tokens", "draft_tokens"),
+        tensors,
+    ):
+        if tensor.device != device:
+            raise ValueError(
+                f"{name} must be on device {device}, got {tensor.device}"
+            )
     if frame.row_keys.shape != (max_num_seqs,):
         raise ValueError("row_keys must have max_num_seqs entries")
     expected = {
@@ -65,8 +83,16 @@ def pack_pp_frame(frame: PPReceiveFrame, max_num_seqs: int,
             raise ValueError(f"{name} must have shape {shape}")
     generation = torch.full((max_num_seqs, 1), frame.generation,
                             dtype=torch.int32, device=frame.row_keys.device)
-    return torch.cat((generation, *(tensor.to(torch.int32).reshape(max_num_seqs, -1)
-                                    for tensor in frame._tensors())), dim=1)
+    return torch.cat(
+        (
+            generation,
+            *(
+                tensor.to(torch.int32).reshape(max_num_seqs, -1)
+                for tensor in tensors
+            ),
+        ),
+        dim=1,
+    )
 
 
 def unpack_pp_frame(packed: torch.Tensor, max_num_seqs: int,
