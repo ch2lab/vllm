@@ -191,6 +191,16 @@ def terminate_fenced_pp_round(
     ensure_pp_generation_not_fenced(generation, timed_out_generation)
 
 
+def run_pp_round_application(round, generation: int, timed_out_generation: int,
+                             application) -> None:
+    try:
+        terminate_fenced_pp_round(round, generation, timed_out_generation)
+        application()
+    except Exception:
+        terminate_pp_round(round)
+        raise
+
+
 def next_pp_generation(previous: int, generation: int | None = None) -> int:
     """Return the next strictly monotonic frame generation."""
     candidate = previous + 1 if generation is None else generation

@@ -63,3 +63,14 @@ Final focused result: `19 passed, 15 warnings`.
 
 Verification: `20 passed, 15 warnings`; Python compilation and `git diff --check`
 passed.
+
+## Complete Application Cleanup
+
+- Added an outer cleanup boundary around the entire post-wait application
+  routine, including gather, tensor writes, request-state updates, cursor
+  alignment, and backfill bookkeeping.
+- Any exception now terminates the active round and advances the generation
+  fence before propagating the original error.
+- Added an application-stage exception regression test.
+
+Final focused result: `21 passed, 15 warnings`.

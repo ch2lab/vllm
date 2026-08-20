@@ -19,6 +19,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     wait_pp_work,
     terminate_pp_round,
     terminate_fenced_pp_round,
+    run_pp_round_application,
     PPReceiveRound,
 )
 
@@ -294,4 +295,13 @@ def test_fenced_receive_terminates_pending_round():
     round = PPReceiveRound(7, torch.empty(1, 1), None, None, None, None, None)
     with pytest.raises(PPProtocolError, match="fenced"):
         terminate_fenced_pp_round(round, 7, 7)
+    assert round.terminated
+
+
+def test_application_exception_terminates_and_fences_round():
+    round = PPReceiveRound(9, torch.empty(1, 1), None, None, None, None, None)
+    with pytest.raises(RuntimeError, match="application"):
+        run_pp_round_application(
+            round, 9, 0, lambda: (_ for _ in ()).throw(
+                RuntimeError("application")))
     assert round.terminated

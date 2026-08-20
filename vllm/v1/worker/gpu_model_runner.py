@@ -660,6 +660,7 @@ class GPUModelRunner(
         self._pp_launched_gen = -1
         self._pp_waited_gen = -1
         self._pp_timed_out_gen = -1
+        self._pp_active_round: PPReceiveRound | None = None
         self._pp_waited_draft_ptr: int | None = None
 
         # Sampler
@@ -5394,6 +5395,20 @@ class GPUModelRunner(
         self._pp_round_event.set()
 
     def _pp_finish_receive_and_backfill(self) -> None:
+        """Apply one received frame with cleanup covering the full path."""
+        try:
+            self._pp_finish_receive_and_backfill_impl()
+        except Exception:
+            round = self._pp_active_round
+            if round is not None:
+                terminate_pp_round(round)
+                self._pp_timed_out_gen = max(
+                    self._pp_timed_out_gen, round.gen)
+            raise
+        finally:
+            self._pp_active_round = None
+
+    def _pp_finish_receive_and_backfill_impl(self) -> None:
         """Consume the round sample_tokens published and apply the C4 backfill.
 
         Runs on the non-last PP rank at the top of execute_model (before
@@ -5436,6 +5451,7 @@ class GPUModelRunner(
             round = self._pp_pending_round
         self._pp_pending_round = None
         self._pp_round_event.clear()
+        self._pp_active_round = round
         wait_gen = round.gen
         try:
             terminate_fenced_pp_round(
