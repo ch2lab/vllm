@@ -5437,17 +5437,33 @@ class GPUModelRunner(
                 round.recv_work,
                 generation=wait_gen,
                 rank=pp.rank,
+                expected_shape=tuple(round.recv.shape),
+                received_shape=tuple(round.recv.shape),
+                received_metadata={
+                    "dtype": str(round.recv.dtype),
+                    "device": str(round.recv.device),
+                },
             )
         except PPProtocolError:
             self._pp_pending_round = None
             raise
-        frame = unpack_pp_frame(round.recv, self.max_num_reqs,
-                                self.num_spec_tokens)
-        validate_pp_frame(
-            frame,
-            expected_generation=wait_gen,
-            previous_generation=self._pp_last_received_generation,
-        )
+        expected_shape = (self.max_num_reqs, 4 + 2 * self.num_spec_tokens + 1)
+        try:
+            frame = unpack_pp_frame(round.recv, self.max_num_reqs,
+                                    self.num_spec_tokens)
+            validate_pp_frame(
+                frame,
+                expected_generation=wait_gen,
+                previous_generation=self._pp_last_received_generation,
+            )
+        except (ValueError, PPProtocolError) as exc:
+            raise PPProtocolError(
+                f"PP frame protocol error at generation {wait_gen} on rank "
+                f"{pp.rank}: expected shape {expected_shape}, received shape "
+                f"{tuple(round.recv.shape)}, received metadata "
+                f"{{'dtype': '{round.recv.dtype}', 'device': '{round.recv.device}'}}: "
+                f"{exc}"
+            ) from exc
         self._pp_last_received_generation = frame.generation
         discard_req_indices = np.nonzero(self.discard_request_mask.np[:num_reqs])[0]
         discard_req_indices_set = set(discard_req_indices.tolist())

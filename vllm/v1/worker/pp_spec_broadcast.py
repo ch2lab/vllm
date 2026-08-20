@@ -103,19 +103,27 @@ def align_pp_frame_rows(
 
 
 def wait_pp_work(work, generation: int, rank: int,
-                 timeout_seconds: float = 30.0) -> None:
+                 timeout_seconds: float = 30.0,
+                 expected_shape=None,
+                 received_shape=None,
+                 received_metadata=None) -> None:
     """Wait for a PP collective with actionable timeout context."""
+    context = f"generation {generation} on rank {rank}"
+    if expected_shape is not None:
+        context += f", expected shape {expected_shape}"
+    if received_shape is not None:
+        context += f", received shape {received_shape}"
+    if received_metadata is not None:
+        context += f", received metadata {received_metadata}"
     try:
         completed = work.wait(timeout=timedelta(seconds=timeout_seconds))
     except Exception as exc:
         raise PPProtocolError(
-            f"PP frame receive failed at generation {generation} on rank {rank}: "
-            f"{exc}"
+            f"PP frame receive failed at {context}: {exc}"
         ) from exc
     if completed is False:
         raise PPProtocolError(
-            f"PP frame receive timed out at generation {generation} on rank {rank} "
-            f"after {timeout_seconds}s"
+            f"PP frame receive timed out at {context} after {timeout_seconds}s"
         )
 
 

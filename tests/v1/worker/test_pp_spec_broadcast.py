@@ -174,5 +174,11 @@ def test_pp_work_timeout_has_protocol_context():
         def wait(self, timeout):
             return False
 
-    with pytest.raises(PPProtocolError, match="generation 7.*rank 1"):
-        wait_pp_work(NeverReady(), generation=7, rank=1, timeout_seconds=0)
+    with pytest.raises(
+        PPProtocolError,
+        match=r"generation 7.*rank 1.*expected shape \(4, 9\).*received shape \(2, 9\)",
+    ):
+        wait_pp_work(
+            NeverReady(), generation=7, rank=1, timeout_seconds=0,
+            expected_shape=(4, 9), received_shape=(2, 9),
+        )
