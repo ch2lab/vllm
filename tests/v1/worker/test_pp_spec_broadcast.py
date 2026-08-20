@@ -184,7 +184,7 @@ def test_pp_work_timeout_has_protocol_context():
         match=r"generation 7.*rank 1.*expected shape \(4, 9\).*received shape \(2, 9\)",
     ):
         wait_pp_work(
-            NeverReady(), generation=7, rank=1, timeout_seconds=0,
+            NeverReady(), generation=7, rank=1, timeout_seconds=30,
             expected_shape=(4, 9), received_shape=(2, 9),
         )
     assert waits == [timedelta(seconds=30)]
