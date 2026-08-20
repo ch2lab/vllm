@@ -90,3 +90,17 @@ Final focused result: `21 passed, 15 warnings`.
 Verification: `25 passed, 15 warnings`; Python compilation and `git diff --check`
 passed. Full GPU/NCCL checks remain unavailable because the compiled extension is
 not present in this checkout.
+
+## Scoped Review Follow-up
+
+- Cursor reconciliation now indexes `last_cursor[i]` before checking the row's
+  validity, preventing list-versus-integer comparison failures in the actual
+  backfill loop.
+- Pending-round supersession now uses an unconditional termination path, so a
+  pending round's Work is aborted and waited even when its generation is not
+  currently fenced.
+- Added regressions for indexed per-row cursor handling and unfenced pending Work
+  supersession.
+
+Verification: `27 passed, 15 warnings`; Python compilation and `git diff --check`
+passed.

@@ -22,6 +22,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     run_pp_round_application,
     PPReceiveRound,
     reconcile_pp_cursor,
+    supersede_pp_round,
 )
 
 
@@ -299,6 +300,26 @@ def test_fenced_receive_terminates_pending_round():
     assert round.terminated
 
 
+def test_superseding_unfenced_round_terminates_work():
+    class Work:
+        def __init__(self):
+            self.calls = []
+
+        def abort(self):
+            self.calls.append("abort")
+
+        def wait(self):
+            self.calls.append("wait")
+
+    work = Work()
+    round = PPReceiveRound(7, torch.empty(1, 1), None, None,
+                           work, None, None)
+
+    supersede_pp_round(round)
+
+    assert work.calls == ["abort", "wait"]
+
+
 def test_application_exception_terminates_and_fences_round():
     round = PPReceiveRound(9, torch.empty(1, 1), None, None, None, None, None)
     with pytest.raises(RuntimeError, match="application"):
@@ -360,3 +381,10 @@ def test_pack_rejects_non_int32_transport_dtype():
 def test_cursor_reconciliation_handles_sender_ahead_and_behind():
     assert reconcile_pp_cursor(3, 5, [10, 11]) == (5, [11, 11])
     assert reconcile_pp_cursor(5, 3, [10, 11]) == (3, [])
+
+
+def test_cursor_reconciliation_uses_one_indexed_sender_cursor():
+    sender_cursors = [-1, 5]
+    row = 1
+    assert sender_cursors[row] >= 0
+    assert reconcile_pp_cursor(3, sender_cursors[row], [10]) == (5, [10, 10])

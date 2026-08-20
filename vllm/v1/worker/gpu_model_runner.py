@@ -245,6 +245,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     receive_sampled_token_ids,
     sanitize_token_zero_col,
     select_latest_sampled_token_per_req,
+    supersede_pp_round,
     unpack_pp_frame,
     validate_pp_frame,
     wait_pp_work,
@@ -5365,9 +5366,7 @@ class GPUModelRunner(
         pp = get_pp_group()
         assert not pp.is_last_rank
         if self._pp_pending_round is not None:
-            terminate_fenced_pp_round(
-                self._pp_pending_round, self._pp_pending_round.gen,
-                self._pp_timed_out_gen)
+            supersede_pp_round(self._pp_pending_round)
         self._pp_round_gen += 1
         gen = self._pp_round_gen
         ensure_pp_generation_not_fenced(gen, self._pp_timed_out_gen)
@@ -5628,7 +5627,7 @@ class GPUModelRunner(
             # larger) so token_ids_cpu reads never land on stale entries. The
             # next-step verification forward reads input ids from the broadcast
             # grid, so this only affects bookkeeping, not the model input.
-            if last_cursor >= 0:
+            if last_cursor[i] >= 0:
                 last = int(last_cursor[i])
                 authoritative, fill = reconcile_pp_cursor(end, last, values)
                 if fill:

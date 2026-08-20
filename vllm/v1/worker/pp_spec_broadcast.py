@@ -191,6 +191,12 @@ def terminate_fenced_pp_round(
     ensure_pp_generation_not_fenced(generation, timed_out_generation)
 
 
+def supersede_pp_round(round) -> None:
+    """Terminate a pending round before replacing it, regardless of its fence."""
+    if round is not None:
+        terminate_pp_round(round)
+
+
 def run_pp_round_application(round, generation: int, timed_out_generation: int,
                              application) -> None:
     try:
