@@ -228,6 +228,7 @@ from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorModelRunne
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 from vllm.v1.worker.pp_spec_broadcast import (
     PPReceiveFrame,
+    PPProtocolError,
     PPReceiveRound,
     broadcast_sampled_token_ids,
     count_valid_sampled_tokens_per_req,
@@ -235,10 +236,13 @@ from vllm.v1.worker.pp_spec_broadcast import (
     num_computed_tokens_drift_correction,
     pack_pp_frame,
     pp_row_key,
+    next_pp_generation,
     receive_sampled_token_ids,
     sanitize_token_zero_col,
     select_latest_sampled_token_per_req,
     unpack_pp_frame,
+    validate_pp_frame,
+    wait_pp_work,
 )
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
@@ -5120,8 +5124,8 @@ class GPUModelRunner(
                 )
                 self.drafter.dummy_run(num_tokens=1)
 
-        # PP + async spec: broadcast the freshly-proposed drafts to the non-last
-        # ranks (paired 1:1 with the sampled-token broadcast above) so they can
+        # PP + async spec: include freshly-proposed drafts in the fixed frame sent
+        # to non-last ranks so they can
         # scatter the real draft tokens into the spec positions next step instead
         # of the -1 placeholder. Without this the non-last verification-forward
         # embeds garbage at the spec positions -> non-greedy output.
@@ -5240,6 +5244,8 @@ class GPUModelRunner(
                   f"data={sampled_token_ids[:2].tolist() if sampled_token_ids.numel() else '[]'}", flush=True)
         pp = get_pp_group()
         assert pp.is_last_rank
+        generation = next_pp_generation(self._pp_round_gen)
+        self._pp_round_gen = generation
         num_reqs = self.input_batch.num_reqs
         max_num_reqs = self.max_num_reqs
         width = self.num_spec_tokens + 1
@@ -5291,7 +5297,7 @@ class GPUModelRunner(
         flags = torch.zeros(max_num_reqs, dtype=torch.int32, device=self.device)
         if not self._is_all_reqs_chunked_prefill():
             flags[:num_reqs] = 1
-        self._pp_pending_pp_sampled = (row_keys, flags, cursors, sampled)
+        self._pp_pending_pp_sampled = (generation, row_keys, flags, cursors, sampled)
 
     def _pp_broadcast_draft_token_ids(self) -> None:
         """Broadcast the proposed draft token ids from the last PP stage.
@@ -5309,7 +5315,7 @@ class GPUModelRunner(
         """
         pp = get_pp_group()
         assert pp.is_last_rank
-        row_keys, flags, cursors, sampled = self._pp_pending_pp_sampled
+        generation, row_keys, flags, cursors, sampled = self._pp_pending_pp_sampled
         draft = torch.full(
             (self.max_num_reqs, self.num_spec_tokens), -1,
             dtype=torch.int32, device=self.device)
@@ -5318,23 +5324,25 @@ class GPUModelRunner(
             num_reqs = self.input_batch.num_reqs
             draft[:num_reqs, :min(dt.shape[-1], self.num_spec_tokens)] = (
                 dt[:num_reqs, :self.num_spec_tokens].to(torch.int32))
-        frame = PPReceiveFrame(self._pp_round_gen + 1, row_keys, flags,
+        frame = PPReceiveFrame(generation, row_keys, flags,
                                cursors, sampled, draft)
         packed = pack_pp_frame(frame, self.max_num_reqs, self.num_spec_tokens,
-                               self._pp_round_gen)
+                               generation - 1)
         broadcast_sampled_token_ids(packed, pp.device_group, pp.rank)
         import os
         if os.environ.get("PPDBG"):
+            dt_shape = tuple(dt.shape) if torch.is_tensor(dt) else None
+            dt_ptr = dt.data_ptr() if torch.is_tensor(dt) else None
+            dt_vals = dt.flatten()[:8].tolist() if torch.is_tensor(dt) else []
             print(f"[PPDBG] SEND_DRAFT reqs={self.input_batch.req_ids} "
-                  f"shape={tuple(dt.shape)} ptr={dt.data_ptr()} "
-                  f"vals={dt.flatten()[:8].tolist()}", flush=True)
+                  f"shape={dt_shape} ptr={dt_ptr} vals={dt_vals}", flush=True)
 
     def _pp_receive_prev_sampled_token_ids_to_input_batch(self) -> None:
         """Launch non-blocking sampled-token/draft receives and publish the round.
 
         Runs on the non-last PP rank from ``sample_tokens`` (output-proc thread).
-        The three broadcasts are launched with ``async_op=True`` and the whole
-        round -- buffers plus ``Work`` handles -- is published atomically, so the
+        One fixed-capacity broadcast is launched with ``async_op=True`` and the
+        whole round -- buffer plus ``Work`` handle -- is published atomically, so the
         consumer in ``_pp_finish_receive_and_backfill`` (driver thread) never
         sees a partially-launched round. Keeping the broadcasts async avoids the
         PP step-phase deadlock: a synchronous receive here can wait for a
@@ -5422,9 +5430,19 @@ class GPUModelRunner(
             print(f"[PPDBG] FINISH round_gen={self._pp_round_gen} "
                   f"wait_gen={wait_gen} stale={stale} n={num_reqs} "
                   f"reqs={self.input_batch.req_ids}", flush=True)
-        round.recv_work.wait()
+        try:
+            wait_pp_work(
+                round.recv_work,
+                generation=wait_gen,
+                rank=pp.rank,
+            )
+        except PPProtocolError:
+            self._pp_pending_round = None
+            raise
         frame = unpack_pp_frame(round.recv, self.max_num_reqs,
                                 self.num_spec_tokens)
+        validate_pp_frame(frame, expected_generation=wait_gen,
+                          previous_generation=wait_gen - 1)
         expected_keys = [
             pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]
         ]

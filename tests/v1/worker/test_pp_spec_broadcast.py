@@ -5,10 +5,13 @@ import torch
 
 from vllm.v1.worker.pp_spec_broadcast import (
     PPReceiveFrame,
+    PPProtocolError,
     broadcast_pp_frame,
     next_pp_generation,
     pack_pp_frame,
     unpack_pp_frame,
+    validate_pp_frame,
+    wait_pp_work,
 )
 
 
@@ -93,3 +96,47 @@ def test_pack_rejects_malformed_shape_and_mixed_devices():
     )
     with pytest.raises(ValueError, match="draft_tokens.*device"):
         pack_pp_frame(mixed, max_num_seqs=2, num_spec_tokens=1)
+
+
+def test_frame_generation_must_match_round_and_increase():
+    frame = PPReceiveFrame(
+        generation=4,
+        row_keys=torch.tensor([1, 2]),
+        row_flags=torch.tensor([1, 0]),
+        cursors=torch.tensor([3, 0]),
+        sampled_tokens=torch.tensor([[10, 11], [-1, -1]]),
+        draft_tokens=torch.tensor([[20], [-1]]),
+    )
+    validate_pp_frame(frame, expected_generation=4, previous_generation=3)
+    with pytest.raises(PPProtocolError, match="generation"):
+        validate_pp_frame(frame, expected_generation=5, previous_generation=3)
+    with pytest.raises(PPProtocolError, match="monotonic"):
+        validate_pp_frame(frame, expected_generation=4, previous_generation=4)
+
+
+def test_inactive_rows_are_cleared_and_flags_are_validated():
+    frame = PPReceiveFrame(
+        generation=1,
+        row_keys=torch.tensor([1, 0]),
+        row_flags=torch.tensor([1, 0]),
+        cursors=torch.tensor([2, 99]),
+        sampled_tokens=torch.tensor([[10, 11], [20, 21]]),
+        draft_tokens=torch.tensor([[30], [40]]),
+    )
+    validate_pp_frame(frame, expected_generation=1, previous_generation=0)
+    assert frame.sampled_tokens[1].tolist() == [-1, -1]
+    assert frame.draft_tokens[1].tolist() == [-1]
+    with pytest.raises(PPProtocolError, match="row_flags"):
+        validate_pp_frame(
+            PPReceiveFrame(1, torch.tensor([1, 2]), torch.tensor([2, 0]),
+                           torch.zeros(2), torch.zeros(2, 2), torch.zeros(2, 1)),
+            expected_generation=1, previous_generation=0)
+
+
+def test_pp_work_timeout_has_protocol_context():
+    class NeverReady:
+        def wait(self, timeout):
+            return False
+
+    with pytest.raises(PPProtocolError, match="generation 7.*rank 1"):
+        wait_pp_work(NeverReady(), generation=7, rank=1, timeout_seconds=0)

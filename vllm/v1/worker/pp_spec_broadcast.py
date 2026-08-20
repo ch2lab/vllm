@@ -2,23 +2,25 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """PP sampled-token broadcast helpers for speculative decoding.
 
-Under PP + async scheduling the last rank broadcasts its sampled token ids to the
-other ranks (which never run the sampler) so they can advance positions and build
-the next input batch. Without spec the broadcast carries shape ``[num_reqs, 1]``;
-with MTP/EAGLE spec the sampler emits ``[num_reqs, num_spec + 1]`` (accepted
-drafts + bonus, ``-1``-padded). These helpers keep the transport width-agnostic so
-both cases share one path, and expose the per-request valid count the receiver
-uses to advance each request by the right number of tokens (not always 1).
+Under PP + async scheduling the last rank broadcasts one fixed-capacity frame to
+the other ranks (which never run the sampler) so they can advance positions and
+build the next input batch. The frame carries sampled tokens, cursors, drafts,
+row keys, and active-row flags in one collective.
 
 Kept in a CUDA-free module so the shape/transport logic is unit-testable over a
 plain gloo CPU group.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 import zlib
 
 import torch
 import torch.distributed as dist
+
+
+class PPProtocolError(RuntimeError):
+    """Raised when PP ranks disagree on a fixed-frame protocol invariant."""
 
 
 @dataclass
@@ -50,6 +52,45 @@ def pp_frame_width(num_spec_tokens: int) -> int:
 
 def pp_row_key(req_id: str) -> int:
     return zlib.crc32(req_id.encode("utf-8"))
+
+
+def validate_pp_frame(
+    frame: PPReceiveFrame,
+    expected_generation: int,
+    previous_generation: int,
+) -> None:
+    if frame.generation != expected_generation:
+        raise PPProtocolError(
+            f"PP frame generation {frame.generation} does not match "
+            f"expected generation {expected_generation}"
+        )
+    if frame.generation <= previous_generation:
+        raise PPProtocolError(
+            f"PP frame generation {frame.generation} is not monotonic after "
+            f"generation {previous_generation}"
+        )
+    if not torch.all((frame.row_flags == 0) | (frame.row_flags == 1)):
+        raise PPProtocolError("PP frame row_flags must contain only 0 or 1")
+    inactive = frame.row_flags == 0
+    frame.sampled_tokens[inactive] = -1
+    frame.draft_tokens[inactive] = -1
+
+
+def wait_pp_work(work, generation: int, rank: int,
+                 timeout_seconds: float = 30.0) -> None:
+    """Wait for a PP collective with actionable timeout context."""
+    try:
+        completed = work.wait(timeout=timedelta(seconds=timeout_seconds))
+    except Exception as exc:
+        raise PPProtocolError(
+            f"PP frame receive failed at generation {generation} on rank {rank}: "
+            f"{exc}"
+        ) from exc
+    if completed is False:
+        raise PPProtocolError(
+            f"PP frame receive timed out at generation {generation} on rank {rank} "
+            f"after {timeout_seconds}s"
+        )
 
 
 def next_pp_generation(previous: int, generation: int | None = None) -> int:
@@ -135,14 +176,14 @@ class PPReceiveRound:
     """One round of the async PP sampled/draft broadcast handoff.
 
     The non-last rank's ``sample_tokens`` (output-proc thread) builds a round --
-    the receive buffers plus their in-flight ``Work`` handles -- and publishes it
+    the receive buffer plus its in-flight ``Work`` handle -- and publishes it
     atomically; ``execute_model`` (driver thread) consumes it in
     ``_pp_finish_receive_and_backfill``. Publishing the whole round in a single
     attribute assignment (instead of publishing each ``Work`` handle separately)
     removes the partial-publication window where a consumer could wait on a stale
     handle while the new round's buffers are still being filled. Buffers are owned
     exclusively by this round: the consumer only reads them after the round's
-    broadcasts have all been waited.
+    broadcast has been waited.
     """
 
     __slots__ = ("gen", "recv", "cursor", "draft", "recv_work", "cursor_work",
