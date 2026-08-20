@@ -1,0 +1,40 @@
+# V1 Fixed-Frame Final Fix Report
+
+Date: 2026-08-20
+Worktree: `/tmp/opencode/vllm-v1-pp-frame`
+
+## Findings Addressed
+
+- Replaced CRC32 request row identity with an exact fixed-width 64-byte UTF-8
+  representation transported as sixteen `int32` words. IDs containing NUL or
+  exceeding 64 bytes are rejected, so distinct supported IDs cannot collide or
+  silently truncate.
+- Expanded frame validation to enforce fixed key/payload shapes, shared device,
+  `int32` transport dtype, legal flags, non-negative active cursors, zero
+  inactive keys/cursors, and `-1` inactive payloads.
+- Inactive rows are excluded during alignment and therefore cannot provide
+  sampled tokens, drafts, or cursors to local scheduling.
+- Timeout and protocol-failure paths terminate the receive work when supported,
+  mark the round terminated, fence its generation, clear publication state, and
+  prevent stale round reuse. The protocol remains one fixed-capacity collective
+  per scheduling step.
+
+No V2 or attention backend files were modified.
+
+## Tests and Checks
+
+```text
+VLLM_TARGET_DEVICE=cpu python -m pytest -q tests/v1/worker/test_pp_spec_broadcast.py
+14 passed, 15 warnings
+
+python -m py_compile vllm/v1/worker/pp_spec_broadcast.py \
+  vllm/v1/worker/gpu_model_runner.py
+PASS
+
+git diff --check
+PASS
+```
+
+The warnings are the existing missing `vllm._version` warning and TorchScript
+deprecation warnings. Full GPU/NCCL and service E2E checks remain unavailable
+because this checkout lacks the compiled `vllm._C_stable_libtorch` extension.

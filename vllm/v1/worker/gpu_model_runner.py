@@ -236,6 +236,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     gather_valid_sampled_tokens_per_req,
     num_computed_tokens_drift_correction,
     pack_pp_frame,
+    pp_frame_width,
     pp_row_key,
     next_pp_generation,
     receive_sampled_token_ids,
@@ -655,6 +656,7 @@ class GPUModelRunner(
         self._pp_last_received_generation = 0
         self._pp_launched_gen = -1
         self._pp_waited_gen = -1
+        self._pp_timed_out_gen = -1
         self._pp_waited_draft_ptr: int | None = None
 
         # Sampler
@@ -5292,7 +5294,7 @@ class GPUModelRunner(
                 )
                 .to(device=self.device, dtype=torch.int32)
             )
-        row_keys = torch.zeros(max_num_reqs, dtype=torch.int32, device=self.device)
+        row_keys = torch.zeros(max_num_reqs, 16, dtype=torch.int32, device=self.device)
         row_keys[:num_reqs] = torch.tensor(
             [pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]],
             dtype=torch.int32, device=self.device)
@@ -5362,7 +5364,7 @@ class GPUModelRunner(
         num_reqs = self.input_batch.num_reqs
         # Always post one fixed-capacity receive; inactive rows are flagged.
         recv = torch.empty(
-            (self.max_num_reqs, 4 + 2 * self.num_spec_tokens + 1), dtype=torch.int32,
+            (self.max_num_reqs, pp_frame_width(self.num_spec_tokens)), dtype=torch.int32,
             device=self.device,
         )
         recv_work = torch.distributed.broadcast(
@@ -5409,6 +5411,7 @@ class GPUModelRunner(
                       f"reqs={self.input_batch.req_ids}", flush=True)
             while self._pp_pending_round is None:
                 if not self._pp_round_event.wait(timeout=30):
+                    self._pp_timed_out_gen = self._pp_round_gen
                     logger.warning(
                         "PP sampled-token round %d never published; "
                         "invalidating this step's mapping",
@@ -5427,7 +5430,7 @@ class GPUModelRunner(
         self._pp_round_event.clear()
         wait_gen = round.gen
         recv = round.recv
-        expected_shape = (self.max_num_reqs, 4 + 2 * self.num_spec_tokens + 1)
+        expected_shape = (self.max_num_reqs, pp_frame_width(self.num_spec_tokens))
         if ppdbg:
             stale = wait_gen < self._pp_round_gen - 1
             print(f"[PPDBG] FINISH round_gen={self._pp_round_gen} "
@@ -5447,6 +5450,8 @@ class GPUModelRunner(
                 },
             )
         except PPProtocolError:
+            round.terminated = True
+            self._pp_timed_out_gen = wait_gen
             self._pp_pending_round = None
             raise
         try:
@@ -5456,6 +5461,8 @@ class GPUModelRunner(
                 frame,
                 expected_generation=wait_gen,
                 previous_generation=self._pp_last_received_generation,
+                max_num_seqs=self.max_num_reqs,
+                num_spec_tokens=self.num_spec_tokens,
             )
         except (ValueError, PPProtocolError) as exc:
             raise PPProtocolError(

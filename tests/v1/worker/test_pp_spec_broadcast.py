@@ -19,6 +19,11 @@ from vllm.v1.worker.pp_spec_broadcast import (
 )
 
 
+def keys(*req_ids):
+    return torch.tensor([pp_row_key(req_id) if req_id else (0,) * 16
+                         for req_id in req_ids], dtype=torch.int32)
+
+
 def test_chunked_sender_and_non_chunked_receiver_use_one_collective(monkeypatch):
     calls = []
 
@@ -29,7 +34,7 @@ def test_chunked_sender_and_non_chunked_receiver_use_one_collective(monkeypatch)
     monkeypatch.setattr(torch.distributed, "broadcast", broadcast)
     frame = PPReceiveFrame(
         generation=1,
-        row_keys=torch.zeros(4, dtype=torch.int32),
+        row_keys=keys("", "", "", ""),
         row_flags=torch.zeros(4, dtype=torch.int32),
         cursors=torch.zeros(4, dtype=torch.int32),
         sampled_tokens=torch.full((4, 3), -1, dtype=torch.int32),
@@ -39,13 +44,13 @@ def test_chunked_sender_and_non_chunked_receiver_use_one_collective(monkeypatch)
     broadcast_pp_frame(frame, max_num_seqs=4, num_spec_tokens=2,
                        group=None, src=1)
 
-    assert calls == [((4, 9), False)]
+    assert calls == [((4, 24), False)]
 
 
 def test_pp_frame_has_fixed_shape_for_runner_limits():
     frame = PPReceiveFrame(
         generation=3,
-        row_keys=torch.arange(4),
+        row_keys=keys("a", "", "b", ""),
         row_flags=torch.tensor([1, 0, 1, 0]),
         cursors=torch.tensor([2, 0, 1, 0]),
         sampled_tokens=torch.tensor([[10, 11, 12], [20, 21, 22], [30, 31, 32], [40, 41, 42]]),
@@ -54,7 +59,7 @@ def test_pp_frame_has_fixed_shape_for_runner_limits():
 
     packed = pack_pp_frame(frame, max_num_seqs=4, num_spec_tokens=2)
 
-    assert packed.shape == (4, 9)
+    assert packed.shape == (4, 24)
     assert unpack_pp_frame(packed, max_num_seqs=4, num_spec_tokens=2) == frame
 
 
@@ -67,7 +72,7 @@ def test_pp_generation_must_increase():
 def test_pack_rejects_non_monotonic_frame_generation():
     frame = PPReceiveFrame(
         generation=7,
-        row_keys=torch.zeros(2),
+        row_keys=keys("", ""),
         row_flags=torch.zeros(2),
         cursors=torch.zeros(2),
         sampled_tokens=torch.zeros(2, 2),
@@ -81,7 +86,7 @@ def test_pack_rejects_non_monotonic_frame_generation():
 def test_pack_rejects_malformed_shape_and_mixed_devices():
     frame = PPReceiveFrame(
         generation=1,
-        row_keys=torch.zeros(2),
+        row_keys=keys("", ""),
         row_flags=torch.zeros(2),
         cursors=torch.zeros(2),
         sampled_tokens=torch.zeros(2, 1),
@@ -92,7 +97,7 @@ def test_pack_rejects_malformed_shape_and_mixed_devices():
 
     mixed = PPReceiveFrame(
         generation=1,
-        row_keys=torch.zeros(2),
+        row_keys=keys("", ""),
         row_flags=torch.zeros(2),
         cursors=torch.zeros(2),
         sampled_tokens=torch.zeros(2, 2),
@@ -105,11 +110,11 @@ def test_pack_rejects_malformed_shape_and_mixed_devices():
 def test_receiver_rejects_repeated_or_out_of_order_generation():
     frame = PPReceiveFrame(
         generation=4,
-        row_keys=torch.tensor([1, 2]),
-        row_flags=torch.tensor([1, 0]),
-        cursors=torch.tensor([3, 0]),
-        sampled_tokens=torch.tensor([[10, 11], [-1, -1]]),
-        draft_tokens=torch.tensor([[20], [-1]]),
+        row_keys=keys("a", ""),
+        row_flags=torch.tensor([1, 0], dtype=torch.int32),
+        cursors=torch.tensor([3, 0], dtype=torch.int32),
+        sampled_tokens=torch.tensor([[10, 11], [-1, -1]], dtype=torch.int32),
+        draft_tokens=torch.tensor([[20], [-1]], dtype=torch.int32),
     )
     last_received_generation = 3
     validate_pp_frame(frame, expected_generation=4,
@@ -128,35 +133,34 @@ def test_receiver_rejects_repeated_or_out_of_order_generation():
 def test_inactive_rows_are_cleared_and_flags_are_validated():
     frame = PPReceiveFrame(
         generation=1,
-        row_keys=torch.tensor([1, 0]),
-        row_flags=torch.tensor([1, 0]),
-        cursors=torch.tensor([2, 99]),
-        sampled_tokens=torch.tensor([[10, 11], [20, 21]]),
-        draft_tokens=torch.tensor([[30], [40]]),
+        row_keys=keys("a", ""),
+        row_flags=torch.tensor([1, 0], dtype=torch.int32),
+        cursors=torch.tensor([2, 99], dtype=torch.int32),
+        sampled_tokens=torch.tensor([[10, 11], [20, 21]], dtype=torch.int32),
+        draft_tokens=torch.tensor([[30], [40]], dtype=torch.int32),
     )
-    validate_pp_frame(frame, expected_generation=1, previous_generation=0)
-    assert frame.sampled_tokens[1].tolist() == [-1, -1]
-    assert frame.draft_tokens[1].tolist() == [-1]
+    with pytest.raises(PPProtocolError, match="inactive"):
+        validate_pp_frame(frame, expected_generation=1, previous_generation=0)
     with pytest.raises(PPProtocolError, match="row_flags"):
         validate_pp_frame(
-            PPReceiveFrame(1, torch.tensor([1, 2]), torch.tensor([2, 0]),
-                           torch.zeros(2), torch.zeros(2, 2), torch.zeros(2, 1)),
+            PPReceiveFrame(1, keys("a", "b"), torch.tensor([2, 0], dtype=torch.int32),
+                           torch.zeros(2, dtype=torch.int32), torch.zeros(2, 2, dtype=torch.int32), torch.zeros(2, 1, dtype=torch.int32)),
             expected_generation=1, previous_generation=0)
 
 
 def test_frame_rows_match_stable_keys_when_local_rows_reordered():
     frame = PPReceiveFrame(
-        1, torch.tensor([pp_row_key("a"), pp_row_key("b"), 0]),
-        torch.tensor([1, 1, 0]), torch.zeros(3), torch.zeros(3, 2),
-        torch.zeros(3, 1))
+        1, keys("a", "b", ""),
+        torch.tensor([1, 1, 0], dtype=torch.int32), torch.zeros(3, dtype=torch.int32),
+        torch.zeros(3, 2, dtype=torch.int32), torch.zeros(3, 1, dtype=torch.int32))
     assert align_pp_frame_rows(frame, ["b", "a"]) == [1, 0]
 
 
 def test_cancelled_missing_and_new_local_rows_are_unmatched():
     frame = PPReceiveFrame(
-        1, torch.tensor([pp_row_key("old"), pp_row_key("cancelled"), 0]),
-        torch.tensor([1, 1, 0]), torch.zeros(3), torch.zeros(3, 2),
-        torch.zeros(3, 1))
+        1, keys("old", "cancelled", ""),
+        torch.tensor([1, 1, 0], dtype=torch.int32), torch.zeros(3, dtype=torch.int32),
+        torch.zeros(3, 2, dtype=torch.int32), torch.zeros(3, 1, dtype=torch.int32))
     assert align_pp_frame_rows(
         frame, ["new", "cancelled", "old"], {1}
     ) == [-1, -1, 0]
@@ -165,10 +169,45 @@ def test_cancelled_missing_and_new_local_rows_are_unmatched():
 def test_duplicate_active_frame_keys_are_rejected():
     key = pp_row_key("duplicate")
     frame = PPReceiveFrame(
-        1, torch.tensor([key, key]), torch.ones(2), torch.zeros(2),
-        torch.zeros(2, 2), torch.zeros(2, 1))
+        1, torch.tensor([key, key], dtype=torch.int32), torch.ones(2, dtype=torch.int32), torch.zeros(2, dtype=torch.int32),
+        torch.zeros(2, 2, dtype=torch.int32), torch.zeros(2, 1, dtype=torch.int32))
     with pytest.raises(PPProtocolError, match="duplicate"):
         align_pp_frame_rows(frame, ["duplicate"])
+
+
+def test_row_keys_are_fixed_width_and_collision_safe():
+    first = pp_row_key("a")
+    second = pp_row_key("b")
+    assert first != second
+    assert len(first) == 16
+    with pytest.raises(ValueError, match="too long"):
+        pp_row_key("x" * 65)
+
+
+def test_frame_validation_rejects_invalid_shapes_devices_and_values():
+    frame = PPReceiveFrame(
+        1, torch.zeros(2, 16, dtype=torch.int32), torch.tensor([1, 0], dtype=torch.int32),
+        torch.tensor([0, -1], dtype=torch.int32), torch.tensor([[2, -1], [3, -1]], dtype=torch.int32),
+        torch.tensor([[4], [5]], dtype=torch.int32),
+    )
+    with pytest.raises(PPProtocolError, match="cursors"):
+        validate_pp_frame(frame, 1, 0, max_num_seqs=2, num_spec_tokens=1)
+
+    frame.cursors[1] = 0
+    frame.sampled_tokens[1, 1] = 7
+    with pytest.raises(PPProtocolError, match="inactive"):
+        validate_pp_frame(frame, 1, 0, max_num_seqs=2, num_spec_tokens=1)
+
+
+def test_inactive_frame_rows_cannot_align_or_supply_cursor():
+    key = pp_row_key("inactive")
+    frame = PPReceiveFrame(
+        1, torch.zeros(2, 16, dtype=torch.int32),
+        torch.tensor([0, 0], dtype=torch.int32), torch.tensor([0, 0], dtype=torch.int32),
+        torch.tensor([[-1, -1], [-1, -1]], dtype=torch.int32), torch.tensor([[-1], [-1]], dtype=torch.int32),
+    )
+    validate_pp_frame(frame, 1, 0, max_num_seqs=2, num_spec_tokens=1)
+    assert align_pp_frame_rows(frame, ["inactive"]) == [-1]
 
 
 def test_pp_work_timeout_has_protocol_context():

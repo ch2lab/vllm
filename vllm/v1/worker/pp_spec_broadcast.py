@@ -13,7 +13,6 @@ plain gloo CPU group.
 
 from dataclasses import dataclass
 from datetime import timedelta
-import zlib
 
 import torch
 import torch.distributed as dist
@@ -47,17 +46,26 @@ class PPReceiveFrame:
 
 
 def pp_frame_width(num_spec_tokens: int) -> int:
-    return 4 + 2 * num_spec_tokens + 1
+    return 3 + 16 + 2 * num_spec_tokens + 1
 
 
-def pp_row_key(req_id: str) -> int:
-    return zlib.crc32(req_id.encode("utf-8"))
+def pp_row_key(req_id: str) -> tuple[int, ...]:
+    encoded = req_id.encode("utf-8")
+    if b"\x00" in encoded:
+        raise ValueError("request id must not contain NUL")
+    if len(encoded) > 64:
+        raise ValueError("request id is too long for fixed-width PP transport")
+    padded = encoded.ljust(64, b"\x00")
+    return tuple(int.from_bytes(padded[i:i + 4], "little", signed=True)
+                 for i in range(0, 64, 4))
 
 
 def validate_pp_frame(
     frame: PPReceiveFrame,
     expected_generation: int,
     previous_generation: int,
+    max_num_seqs: int | None = None,
+    num_spec_tokens: int | None = None,
 ) -> None:
     if frame.generation != expected_generation:
         raise PPProtocolError(
@@ -69,9 +77,35 @@ def validate_pp_frame(
             f"PP frame generation {frame.generation} is not monotonic after "
             f"generation {previous_generation}"
         )
+    if max_num_seqs is not None and frame.row_keys.shape != (max_num_seqs, 16):
+        raise PPProtocolError("row_keys has invalid fixed-frame shape")
+    if frame.row_keys.dim() != 2 or frame.row_keys.shape[1:] != (16,):
+        raise PPProtocolError("row_keys must have shape [rows, 16]")
+    rows = frame.row_keys.shape[0]
+    if frame.row_flags.shape != (rows,) or frame.cursors.shape != (rows,):
+        raise PPProtocolError("row_flags and cursors must match row count")
+    if num_spec_tokens is not None:
+        if frame.sampled_tokens.shape != (rows, num_spec_tokens + 1):
+            raise PPProtocolError("sampled_tokens has invalid fixed-frame shape")
+        if frame.draft_tokens.shape != (rows, num_spec_tokens):
+            raise PPProtocolError("draft_tokens has invalid fixed-frame shape")
+    tensors = frame._tensors()
+    if any(t.dtype != torch.int32 for t in tensors):
+        raise PPProtocolError("all PP frame tensors must use int32 transport")
+    if any(t.device != frame.row_keys.device for t in tensors):
+        raise PPProtocolError("all PP frame tensors must share a device")
     if not torch.all((frame.row_flags == 0) | (frame.row_flags == 1)):
         raise PPProtocolError("PP frame row_flags must contain only 0 or 1")
     inactive = frame.row_flags == 0
+    if torch.any(frame.cursors[inactive] != 0):
+        raise PPProtocolError("inactive PP frame cursors must be zero")
+    if torch.any(frame.cursors[~inactive] < 0):
+        raise PPProtocolError("active PP frame cursors must be non-negative")
+    if torch.any(frame.row_keys[inactive] != 0):
+        raise PPProtocolError("inactive PP frame row keys must be zero")
+    if torch.any(frame.sampled_tokens[inactive] != -1) or torch.any(
+            frame.draft_tokens[inactive] != -1):
+        raise PPProtocolError("inactive PP frame payloads must be -1")
     frame.sampled_tokens[inactive] = -1
     frame.draft_tokens[inactive] = -1
 
@@ -87,14 +121,15 @@ def align_pp_frame_rows(
     position.  Local rows which were cancelled, are new after the frame was
     produced, or have no active frame row are deliberately left unmatched.
     """
-    frame_rows: dict[int, int] = {}
+    frame_rows: dict[tuple[int, ...], int] = {}
     for row, (key, flag) in enumerate(zip(frame.row_keys.tolist(),
                                            frame.row_flags.tolist())):
         if not flag:
             continue
+        key = tuple(key)
         if key in frame_rows:
             raise PPProtocolError("PP frame contains duplicate active row keys")
-        frame_rows[key] = row
+        frame_rows[tuple(key)] = row
     discarded = discard_indices or set()
     return [
         -1 if i in discarded else frame_rows.get(pp_row_key(req_id), -1)
@@ -122,6 +157,12 @@ def wait_pp_work(work, generation: int, rank: int,
             f"PP frame receive failed at {context}: {exc}"
         ) from exc
     if completed is False:
+        abort = getattr(work, "abort", None)
+        if callable(abort):
+            try:
+                abort()
+            except Exception:
+                pass
         raise PPProtocolError(
             f"PP frame receive timed out at {context} after {timeout_seconds}s"
         )
@@ -154,8 +195,8 @@ def pack_pp_frame(
             raise ValueError(
                 f"{name} must be on device {device}, got {tensor.device}"
             )
-    if frame.row_keys.shape != (max_num_seqs,):
-        raise ValueError("row_keys must have max_num_seqs entries")
+    if frame.row_keys.shape != (max_num_seqs, 16):
+        raise ValueError("row_keys must have fixed-width shape [max_num_seqs, 16]")
     expected = {
         "row_flags": (max_num_seqs,),
         "cursors": (max_num_seqs,),
@@ -187,9 +228,9 @@ def unpack_pp_frame(packed: torch.Tensor, max_num_seqs: int,
         raise ValueError(f"packed frame must have shape {(max_num_seqs, width)}")
     if not torch.equal(packed[:, 0], packed[0, 0].expand(max_num_seqs)):
         raise ValueError("frame generation must be constant")
-    columns = iter((packed[:, 1], packed[:, 2], packed[:, 3]))
-    sampled = packed[:, 4:5 + num_spec_tokens]
-    draft = packed[:, 5 + num_spec_tokens:]
+    columns = iter((packed[:, 1:17], packed[:, 17], packed[:, 18]))
+    sampled = packed[:, 19:20 + num_spec_tokens]
+    draft = packed[:, 20 + num_spec_tokens:]
     return PPReceiveFrame(int(packed[0, 0].item()), next(columns), next(columns),
                           next(columns), sampled, draft)
 
@@ -221,7 +262,7 @@ class PPReceiveRound:
     """
 
     __slots__ = ("gen", "recv", "cursor", "draft", "recv_work", "cursor_work",
-                 "draft_work")
+                 "draft_work", "terminated")
 
     def __init__(
         self,
@@ -240,6 +281,7 @@ class PPReceiveRound:
         self.recv_work = recv_work
         self.cursor_work = cursor_work
         self.draft_work = draft_work
+        self.terminated = False
 
 
 def count_valid_sampled_tokens_per_req(sampled_token_ids: torch.Tensor) -> torch.Tensor:
