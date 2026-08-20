@@ -224,6 +224,8 @@ def pack_pp_frame(
         ("row_keys", "row_flags", "cursors", "sampled_tokens", "draft_tokens"),
         tensors,
     ):
+        if tensor.dtype != torch.int32:
+            raise ValueError(f"{name} must use int32 transport dtype")
         if tensor.device != device:
             raise ValueError(
                 f"{name} must be on device {device}, got {tensor.device}"
@@ -318,7 +320,41 @@ class PPReceiveRound:
 
 
 def terminate_pp_round(round: PPReceiveRound) -> None:
+    if round.terminated:
+        return
+    works = {id(work): work for work in (
+        round.recv_work, round.cursor_work, round.draft_work
+    ) if work is not None}
+    for work in works.values():
+        abort = getattr(work, "abort", None)
+        if callable(abort):
+            try:
+                abort()
+            except Exception:
+                pass
+        wait = getattr(work, "wait", None)
+        if callable(wait):
+            try:
+                wait()
+            except TypeError:
+                try:
+                    wait(timeout=0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
     round.terminated = True
+
+
+def reconcile_pp_cursor(
+    local_cursor: int, sender_cursor: int, values: list[int]
+) -> tuple[int, list[int]]:
+    """Reconcile the local bookkeeping cursor to the sender-authoritative value."""
+    if sender_cursor <= local_cursor:
+        return sender_cursor, []
+    gap = sender_cursor - local_cursor
+    fill = (values[-1:] * gap) if values else [-1] * gap
+    return sender_cursor, fill
 
 
 def count_valid_sampled_tokens_per_req(sampled_token_ids: torch.Tensor) -> torch.Tensor:

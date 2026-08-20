@@ -74,3 +74,19 @@ passed.
 - Added an application-stage exception regression test.
 
 Final focused result: `21 passed, 15 warnings`.
+
+## Whole-Branch Review Final Fix Wave
+
+- Terminating or superseding a pending receive round now aborts and waits each
+  unique Work handle when supported, while tolerating mocked Work without
+  `abort()` or with failing cleanup methods.
+- Cursor application now reconciles in both directions to the sender-authoritative
+  cursor. Forward gaps are safely filled; sender-behind cursors move back without
+  truncating valid request state.
+- Frame packing rejects non-`int32` transport tensors instead of silently casting
+  sender payloads.
+- Added focused lifecycle, cursor-ahead/behind, and dtype-rejection tests.
+
+Verification: `25 passed, 15 warnings`; Python compilation and `git diff --check`
+passed. Full GPU/NCCL checks remain unavailable because the compiled extension is
+not present in this checkout.

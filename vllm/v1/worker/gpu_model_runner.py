@@ -240,6 +240,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     pack_pp_frame,
     pp_frame_width,
     pp_row_key,
+    reconcile_pp_cursor,
     next_pp_generation,
     receive_sampled_token_ids,
     sanitize_token_zero_col,
@@ -5627,22 +5628,21 @@ class GPUModelRunner(
             # larger) so token_ids_cpu reads never land on stale entries. The
             # next-step verification forward reads input ids from the broadcast
             # grid, so this only affects bookkeeping, not the model input.
-            if last_cursor is not None:
+            if last_cursor >= 0:
                 last = int(last_cursor[i])
-                if last > end:
-                    gap = last - end
+                authoritative, fill = reconcile_pp_cursor(end, last, values)
+                if fill:
                     # Never backfill with token 0 ('!' storm poison): repeat the
                     # last real token when available, else leave -1 (a later
                     # alignment will overwrite it).
-                    fill = (values[-1:] * gap) if values else [-1] * gap
-                    self.input_batch.token_ids_cpu[i, end:last] = fill
-                    self.input_batch.is_token_ids[i, end:last] = True
-                    self.input_batch.num_tokens_no_spec[i] = last
+                    self.input_batch.token_ids_cpu[i, end:authoritative] = fill
+                    self.input_batch.is_token_ids[i, end:authoritative] = True
                     import os as _os
                     if _os.environ.get("PPDBG"):
-                        print(f"[PPDBG] CURSOR_ALIGN req={req_id} from={end} to={last} "
-                              f"gap={gap} v={v} pos={pos} "
+                        print(f"[PPDBG] CURSOR_ALIGN req={req_id} from={end} to={authoritative} "
+                              f"gap={len(fill)} v={v} pos={pos} "
                               f"recv={recv[i].tolist()}", flush=True)
+                self.input_batch.num_tokens_no_spec[i] = authoritative
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
