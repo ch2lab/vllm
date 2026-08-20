@@ -16,6 +16,72 @@ plain gloo CPU group.
 
 import torch
 import torch.distributed as dist
+from dataclasses import dataclass
+
+
+@dataclass
+class PPReceiveFrame:
+    """Fixed-shape CPU/GPU payload exchanged for one PP scheduling round."""
+
+    generation: int
+    row_keys: torch.Tensor
+    row_flags: torch.Tensor
+    cursors: torch.Tensor
+    sampled_tokens: torch.Tensor
+    draft_tokens: torch.Tensor
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, PPReceiveFrame):
+            return NotImplemented
+        return (self.generation == other.generation and
+                all(torch.equal(a, b) for a, b in zip(self._tensors(), other._tensors())))
+
+    def _tensors(self):
+        return (self.row_keys, self.row_flags, self.cursors,
+                self.sampled_tokens, self.draft_tokens)
+
+
+def next_pp_generation(previous: int, generation: int | None = None) -> int:
+    """Return the next strictly monotonic frame generation."""
+    candidate = previous + 1 if generation is None else generation
+    if candidate <= previous:
+        raise ValueError("PP frame generation must be monotonic")
+    return candidate
+
+
+def pack_pp_frame(frame: PPReceiveFrame, max_num_seqs: int,
+                  num_spec_tokens: int) -> torch.Tensor:
+    """Pack a frame into one fixed ``[max_num_seqs, width]`` int32 tensor."""
+    if frame.row_keys.shape != (max_num_seqs,):
+        raise ValueError("row_keys must have max_num_seqs entries")
+    expected = {
+        "row_flags": (max_num_seqs,),
+        "cursors": (max_num_seqs,),
+        "sampled_tokens": (max_num_seqs, num_spec_tokens + 1),
+        "draft_tokens": (max_num_seqs, num_spec_tokens),
+    }
+    for name, shape in expected.items():
+        if getattr(frame, name).shape != shape:
+            raise ValueError(f"{name} must have shape {shape}")
+    generation = torch.full((max_num_seqs, 1), frame.generation,
+                            dtype=torch.int32, device=frame.row_keys.device)
+    return torch.cat((generation, *(tensor.to(torch.int32).reshape(max_num_seqs, -1)
+                                    for tensor in frame._tensors())), dim=1)
+
+
+def unpack_pp_frame(packed: torch.Tensor, max_num_seqs: int,
+                    num_spec_tokens: int) -> PPReceiveFrame:
+    """Unpack and validate a fixed PP frame."""
+    width = 4 + num_spec_tokens + 1 + num_spec_tokens
+    if packed.shape != (max_num_seqs, width):
+        raise ValueError(f"packed frame must have shape {(max_num_seqs, width)}")
+    if not torch.equal(packed[:, 0], packed[0, 0].expand(max_num_seqs)):
+        raise ValueError("frame generation must be constant")
+    columns = iter((packed[:, 1], packed[:, 2], packed[:, 3]))
+    sampled = packed[:, 4:5 + num_spec_tokens]
+    draft = packed[:, 5 + num_spec_tokens:]
+    return PPReceiveFrame(int(packed[0, 0].item()), next(columns), next(columns),
+                          next(columns), sampled, draft)
 
 
 class PPReceiveRound:
