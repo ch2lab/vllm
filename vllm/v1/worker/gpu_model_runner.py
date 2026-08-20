@@ -5294,16 +5294,17 @@ class GPUModelRunner(
                             sampled_token_ids[r, -1] = -1
             sampled[:num_reqs] = sampled_token_ids[:num_reqs, :width]
         cursors = torch.zeros(max_num_reqs, dtype=torch.int32, device=self.device)
-        cursors[:num_reqs] = (
+        row_keys = torch.zeros(max_num_reqs, 16, dtype=torch.int32, device=self.device)
+        if not self._is_all_reqs_chunked_prefill():
+            cursors[:num_reqs] = (
                 torch.from_numpy(
                     self.input_batch.num_tokens_no_spec[:num_reqs]
                 )
                 .to(device=self.device, dtype=torch.int32)
             )
-        row_keys = torch.zeros(max_num_reqs, 16, dtype=torch.int32, device=self.device)
-        row_keys[:num_reqs] = torch.tensor(
-            [pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]],
-            dtype=torch.int32, device=self.device)
+            row_keys[:num_reqs] = torch.tensor(
+                [pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]],
+                dtype=torch.int32, device=self.device)
         flags = torch.zeros(max_num_reqs, dtype=torch.int32, device=self.device)
         if not self._is_all_reqs_chunked_prefill():
             flags[:num_reqs] = 1

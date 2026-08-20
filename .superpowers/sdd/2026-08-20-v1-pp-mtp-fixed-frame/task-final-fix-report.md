@@ -104,3 +104,14 @@ not present in this checkout.
 
 Verification: `27 passed, 15 warnings`; Python compilation and `git diff --check`
 passed.
+
+## All-Chunked-Prefill Frame Fix
+
+- All-inactive sender frames now retain zero row keys and cursors; sampled and
+  draft payloads remain `-1`, satisfying `validate_pp_frame` while preserving
+  the single fixed-capacity collective.
+- Added coverage with nonzero local row metadata proving the packed inactive
+  frame validates and does not align to local requests.
+
+Verification: `28 passed, 15 warnings`; Python compilation and `git diff --check`
+passed.

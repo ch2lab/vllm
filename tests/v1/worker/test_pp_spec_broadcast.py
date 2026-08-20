@@ -54,6 +54,28 @@ def test_chunked_sender_and_non_chunked_receiver_use_one_collective(monkeypatch)
     assert calls == [((4, 24), False)]
 
 
+def test_all_inactive_frame_clears_local_metadata_and_is_ignored():
+    local_row_keys = keys("chunked-a", "chunked-b")
+    local_cursors = torch.tensor([12, 19], dtype=torch.int32)
+    frame = PPReceiveFrame(
+        generation=1,
+        row_keys=torch.zeros_like(local_row_keys),
+        row_flags=torch.zeros(2, dtype=torch.int32),
+        cursors=torch.zeros_like(local_cursors),
+        sampled_tokens=torch.full((2, 2), -1, dtype=torch.int32),
+        draft_tokens=torch.full((2, 1), -1, dtype=torch.int32),
+    )
+
+    packed = pack_pp_frame(frame, max_num_seqs=2, num_spec_tokens=1)
+    received = unpack_pp_frame(packed, max_num_seqs=2, num_spec_tokens=1)
+    validate_pp_frame(received, expected_generation=1, previous_generation=0,
+                      max_num_seqs=2, num_spec_tokens=1)
+
+    assert torch.any(local_row_keys != 0)
+    assert torch.any(local_cursors != 0)
+    assert align_pp_frame_rows(received, ["chunked-a", "chunked-b"]) == [-1, -1]
+
+
 def test_pp_frame_has_fixed_shape_for_runner_limits():
     frame = PPReceiveFrame(
         generation=3,
