@@ -5,10 +5,34 @@ import torch
 
 from vllm.v1.worker.pp_spec_broadcast import (
     PPReceiveFrame,
+    broadcast_pp_frame,
     next_pp_generation,
     pack_pp_frame,
     unpack_pp_frame,
 )
+
+
+def test_chunked_sender_and_non_chunked_receiver_use_one_collective(monkeypatch):
+    calls = []
+
+    def broadcast(tensor, src, group, async_op=False):
+        calls.append((tuple(tensor.shape), async_op))
+        return tensor
+
+    monkeypatch.setattr(torch.distributed, "broadcast", broadcast)
+    frame = PPReceiveFrame(
+        generation=1,
+        row_keys=torch.zeros(4, dtype=torch.int32),
+        row_flags=torch.zeros(4, dtype=torch.int32),
+        cursors=torch.zeros(4, dtype=torch.int32),
+        sampled_tokens=torch.full((4, 3), -1, dtype=torch.int32),
+        draft_tokens=torch.full((4, 2), -1, dtype=torch.int32),
+    )
+
+    broadcast_pp_frame(frame, max_num_seqs=4, num_spec_tokens=2,
+                       group=None, src=1)
+
+    assert calls == [((4, 9), False)]
 
 
 def test_pp_frame_has_fixed_shape_for_runner_limits():

@@ -15,6 +15,7 @@ plain gloo CPU group.
 """
 
 from dataclasses import dataclass
+import zlib
 
 import torch
 import torch.distributed as dist
@@ -41,6 +42,14 @@ class PPReceiveFrame:
     def _tensors(self):
         return (self.row_keys, self.row_flags, self.cursors,
                 self.sampled_tokens, self.draft_tokens)
+
+
+def pp_frame_width(num_spec_tokens: int) -> int:
+    return 4 + 2 * num_spec_tokens + 1
+
+
+def pp_row_key(req_id: str) -> int:
+    return zlib.crc32(req_id.encode("utf-8"))
 
 
 def next_pp_generation(previous: int, generation: int | None = None) -> int:
@@ -98,7 +107,7 @@ def pack_pp_frame(
 def unpack_pp_frame(packed: torch.Tensor, max_num_seqs: int,
                     num_spec_tokens: int) -> PPReceiveFrame:
     """Unpack and validate a fixed PP frame."""
-    width = 4 + num_spec_tokens + 1 + num_spec_tokens
+    width = pp_frame_width(num_spec_tokens)
     if packed.shape != (max_num_seqs, width):
         raise ValueError(f"packed frame must have shape {(max_num_seqs, width)}")
     if not torch.equal(packed[:, 0], packed[0, 0].expand(max_num_seqs)):
@@ -108,6 +117,18 @@ def unpack_pp_frame(packed: torch.Tensor, max_num_seqs: int,
     draft = packed[:, 5 + num_spec_tokens:]
     return PPReceiveFrame(int(packed[0, 0].item()), next(columns), next(columns),
                           next(columns), sampled, draft)
+
+
+def broadcast_pp_frame(
+    frame: PPReceiveFrame,
+    max_num_seqs: int,
+    num_spec_tokens: int,
+    group,
+    src: int,
+) -> None:
+    """Broadcast one fixed-capacity PP frame, including inactive rows."""
+    packed = pack_pp_frame(frame, max_num_seqs, num_spec_tokens)
+    dist.broadcast(packed, src=src, group=group)
 
 
 class PPReceiveRound:
