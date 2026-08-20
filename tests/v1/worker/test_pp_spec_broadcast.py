@@ -18,6 +18,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     validate_pp_frame,
     wait_pp_work,
     terminate_pp_round,
+    terminate_fenced_pp_round,
     PPReceiveRound,
 )
 
@@ -286,4 +287,11 @@ def test_timeout_fences_stale_generation():
 def test_validation_failure_terminates_round():
     round = PPReceiveRound(1, torch.empty(1, 1), None, None, None, None, None)
     terminate_pp_round(round)
+    assert round.terminated
+
+
+def test_fenced_receive_terminates_pending_round():
+    round = PPReceiveRound(7, torch.empty(1, 1), None, None, None, None, None)
+    with pytest.raises(PPProtocolError, match="fenced"):
+        terminate_fenced_pp_round(round, 7, 7)
     assert round.terminated

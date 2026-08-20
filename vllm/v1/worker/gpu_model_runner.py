@@ -235,6 +235,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     count_valid_sampled_tokens_per_req,
     gather_valid_sampled_tokens_per_req,
     ensure_pp_generation_not_fenced,
+    terminate_fenced_pp_round,
     num_computed_tokens_drift_correction,
     pack_pp_frame,
     pp_frame_width,
@@ -5362,8 +5363,9 @@ class GPUModelRunner(
         pp = get_pp_group()
         assert not pp.is_last_rank
         if self._pp_pending_round is not None:
-            ensure_pp_generation_not_fenced(
-                self._pp_pending_round.gen, self._pp_timed_out_gen)
+            terminate_fenced_pp_round(
+                self._pp_pending_round, self._pp_pending_round.gen,
+                self._pp_timed_out_gen)
         self._pp_round_gen += 1
         gen = self._pp_round_gen
         ensure_pp_generation_not_fenced(gen, self._pp_timed_out_gen)
@@ -5436,7 +5438,8 @@ class GPUModelRunner(
         self._pp_round_event.clear()
         wait_gen = round.gen
         try:
-            ensure_pp_generation_not_fenced(wait_gen, self._pp_timed_out_gen)
+            terminate_fenced_pp_round(
+                round, wait_gen, self._pp_timed_out_gen)
         except PPProtocolError:
             terminate_pp_round(round)
             self._pp_pending_round = None
@@ -5489,22 +5492,27 @@ class GPUModelRunner(
         self._pp_last_received_generation = frame.generation
         discard_req_indices = np.nonzero(self.discard_request_mask.np[:num_reqs])[0]
         discard_req_indices_set = set(discard_req_indices.tolist())
-        frame_rows = align_pp_frame_rows(
-            frame, self.input_batch.req_ids[:num_reqs], discard_req_indices_set
-        )
-        recv = frame.sampled_tokens.new_full(
-            (num_reqs, frame.sampled_tokens.shape[1]), -1
-        )
-        draft = frame.draft_tokens.new_full(
-            (num_reqs, frame.draft_tokens.shape[1]), -1
-        )
-        last_cursor = [-1] * num_reqs
-        for local_row, frame_row in enumerate(frame_rows):
-            if frame_row < 0:
-                continue
-            recv[local_row] = frame.sampled_tokens[frame_row]
-            draft[local_row] = frame.draft_tokens[frame_row]
-            last_cursor[local_row] = int(frame.cursors[frame_row])
+        try:
+            frame_rows = align_pp_frame_rows(
+                frame, self.input_batch.req_ids[:num_reqs], discard_req_indices_set
+            )
+            recv = frame.sampled_tokens.new_full(
+                (num_reqs, frame.sampled_tokens.shape[1]), -1
+            )
+            draft = frame.draft_tokens.new_full(
+                (num_reqs, frame.draft_tokens.shape[1]), -1
+            )
+            last_cursor = [-1] * num_reqs
+            for local_row, frame_row in enumerate(frame_rows):
+                if frame_row < 0:
+                    continue
+                recv[local_row] = frame.sampled_tokens[frame_row]
+                draft[local_row] = frame.draft_tokens[frame_row]
+                last_cursor[local_row] = int(frame.cursors[frame_row])
+        except PPProtocolError:
+            terminate_pp_round(round)
+            self._pp_timed_out_gen = wait_gen
+            raise
         # Wait for the cursor broadcast launched alongside the sampled grid.
         # Wait for the draft grid broadcast that was launched alongside. Only
         # after the wait are the buffers handed to _prepare_input_ids (same

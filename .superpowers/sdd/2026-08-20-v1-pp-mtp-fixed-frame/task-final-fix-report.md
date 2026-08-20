@@ -53,3 +53,13 @@ because this checkout lacks the compiled `vllm._C_stable_libtorch` extension.
   cleanup, timeout cleanup, and row-key error normalization.
 
 Final focused result: `19 passed, 15 warnings`.
+
+## Remaining Fencing Fixes
+
+- Stale receive rejection now terminates the pending round before raising.
+- Alignment and post-wait row application run under the round cleanup path;
+  `PPProtocolError` terminates the round and advances the generation fence.
+- Added focused coverage for pending-round termination on stale receive.
+
+Verification: `20 passed, 15 warnings`; Python compilation and `git diff --check`
+passed.
