@@ -6,9 +6,11 @@ import torch
 from vllm.v1.worker.pp_spec_broadcast import (
     PPReceiveFrame,
     PPProtocolError,
+    align_pp_frame_rows,
     broadcast_pp_frame,
     next_pp_generation,
     pack_pp_frame,
+    pp_row_key,
     unpack_pp_frame,
     validate_pp_frame,
     wait_pp_work,
@@ -138,6 +140,33 @@ def test_inactive_rows_are_cleared_and_flags_are_validated():
             PPReceiveFrame(1, torch.tensor([1, 2]), torch.tensor([2, 0]),
                            torch.zeros(2), torch.zeros(2, 2), torch.zeros(2, 1)),
             expected_generation=1, previous_generation=0)
+
+
+def test_frame_rows_match_stable_keys_when_local_rows_reordered():
+    frame = PPReceiveFrame(
+        1, torch.tensor([pp_row_key("a"), pp_row_key("b"), 0]),
+        torch.tensor([1, 1, 0]), torch.zeros(3), torch.zeros(3, 2),
+        torch.zeros(3, 1))
+    assert align_pp_frame_rows(frame, ["b", "a"]) == [1, 0]
+
+
+def test_cancelled_missing_and_new_local_rows_are_unmatched():
+    frame = PPReceiveFrame(
+        1, torch.tensor([pp_row_key("old"), pp_row_key("cancelled"), 0]),
+        torch.tensor([1, 1, 0]), torch.zeros(3), torch.zeros(3, 2),
+        torch.zeros(3, 1))
+    assert align_pp_frame_rows(
+        frame, ["new", "cancelled", "old"], {1}
+    ) == [-1, -1, 0]
+
+
+def test_duplicate_active_frame_keys_are_rejected():
+    key = pp_row_key("duplicate")
+    frame = PPReceiveFrame(
+        1, torch.tensor([key, key]), torch.ones(2), torch.zeros(2),
+        torch.zeros(2, 2), torch.zeros(2, 1))
+    with pytest.raises(PPProtocolError, match="duplicate"):
+        align_pp_frame_rows(frame, ["duplicate"])
 
 
 def test_pp_work_timeout_has_protocol_context():

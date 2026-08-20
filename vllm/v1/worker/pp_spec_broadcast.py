@@ -76,6 +76,32 @@ def validate_pp_frame(
     frame.draft_tokens[inactive] = -1
 
 
+def align_pp_frame_rows(
+    frame: PPReceiveFrame,
+    local_req_ids: list[str],
+    discard_indices: set[int] | None = None,
+) -> list[int]:
+    """Return the frame row for each local row, or ``-1`` if not applicable.
+
+    Frame rows are identified by their stable request key, not by scheduler
+    position.  Local rows which were cancelled, are new after the frame was
+    produced, or have no active frame row are deliberately left unmatched.
+    """
+    frame_rows: dict[int, int] = {}
+    for row, (key, flag) in enumerate(zip(frame.row_keys.tolist(),
+                                           frame.row_flags.tolist())):
+        if not flag:
+            continue
+        if key in frame_rows:
+            raise PPProtocolError("PP frame contains duplicate active row keys")
+        frame_rows[key] = row
+    discarded = discard_indices or set()
+    return [
+        -1 if i in discarded else frame_rows.get(pp_row_key(req_id), -1)
+        for i, req_id in enumerate(local_req_ids)
+    ]
+
+
 def wait_pp_work(work, generation: int, rank: int,
                  timeout_seconds: float = 30.0) -> None:
     """Wait for a PP collective with actionable timeout context."""

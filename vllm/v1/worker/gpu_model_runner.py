@@ -230,6 +230,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     PPReceiveFrame,
     PPProtocolError,
     PPReceiveRound,
+    align_pp_frame_rows,
     broadcast_sampled_token_ids,
     count_valid_sampled_tokens_per_req,
     gather_valid_sampled_tokens_per_req,
@@ -5448,18 +5449,28 @@ class GPUModelRunner(
             previous_generation=self._pp_last_received_generation,
         )
         self._pp_last_received_generation = frame.generation
-        expected_keys = [
-            pp_row_key(req_id) for req_id in self.input_batch.req_ids[:num_reqs]
-        ]
-        if frame.row_keys[:num_reqs].tolist() != expected_keys:
-            raise RuntimeError("PP frame request rows do not match local batch")
-        recv = frame.sampled_tokens[:num_reqs]
+        discard_req_indices = np.nonzero(self.discard_request_mask.np[:num_reqs])[0]
+        discard_req_indices_set = set(discard_req_indices.tolist())
+        frame_rows = align_pp_frame_rows(
+            frame, self.input_batch.req_ids[:num_reqs], discard_req_indices_set
+        )
+        recv = frame.sampled_tokens.new_full(
+            (num_reqs, frame.sampled_tokens.shape[1]), -1
+        )
+        draft = frame.draft_tokens.new_full(
+            (num_reqs, frame.draft_tokens.shape[1]), -1
+        )
+        last_cursor = [-1] * num_reqs
+        for local_row, frame_row in enumerate(frame_rows):
+            if frame_row < 0:
+                continue
+            recv[local_row] = frame.sampled_tokens[frame_row]
+            draft[local_row] = frame.draft_tokens[frame_row]
+            last_cursor[local_row] = int(frame.cursors[frame_row])
         # Wait for the cursor broadcast launched alongside the sampled grid.
-        last_cursor = frame.cursors[:num_reqs].tolist()
         # Wait for the draft grid broadcast that was launched alongside. Only
         # after the wait are the buffers handed to _prepare_input_ids (same
         # thread), which scatters them -- no cross-thread access.
-        draft = frame.draft_tokens[:num_reqs]
         if self.num_spec_tokens:
             self._draft_token_ids = draft
             self._pp_waited_gen = wait_gen
@@ -5510,8 +5521,6 @@ class GPUModelRunner(
 
         # construct `prev_req_id_to_index` here so `_prepare_input_ids`
         # can map req_id -> previous batch row
-        discard_req_indices = np.nonzero(self.discard_request_mask.np[:num_reqs])[0]
-        discard_req_indices_set = set(discard_req_indices)
         prev_req_id_to_index: dict[str, int] = {}
         self._pp_prev_valid_sampled_count = {}
         for i, req_id in enumerate(self.input_batch.req_ids):
