@@ -21,69 +21,36 @@ from .wy_fast import recompute_w_u_fwd
 
 
 def chunk_gated_delta_rule_fwd(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    scale: float,
-    initial_state: torch.Tensor,
-    output_final_state: bool,
-    cu_seqlens: torch.Tensor | None = None,
-    chunk_indices: torch.Tensor | None = None,
-    chunk_offsets: torch.Tensor | None = None,
-    core_attn_out: torch.Tensor | None = None,
+    q, k, v, g, beta, scale, initial_state, output_final_state,
+    cu_seqlens=None, chunk_indices=None, chunk_offsets=None,
+    core_attn_out=None,
 ):
     g = chunk_local_cumsum(
         g, chunk_size=FLA_CHUNK_SIZE, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices
     )
-    # obtain WY representation. u is actually the new v.
     A = chunk_scaled_dot_kkt_fwd(
-        k=k,
-        beta=beta,
-        g=g,
-        cu_seqlens=cu_seqlens,
-        chunk_indices=chunk_indices,
-        output_dtype=torch.float32,
+        k=k, beta=beta, g=g, cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices, output_dtype=torch.float32,
     )
     A = solve_tril(
         A=A, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices, output_dtype=k.dtype
     )
     w, u = recompute_w_u_fwd(
-        k=k,
-        v=v,
-        beta=beta,
-        A=A,
-        g_cumsum=g,
-        cu_seqlens=cu_seqlens,
-        chunk_indices=chunk_indices,
+        k=k, v=v, beta=beta, A=A, g_cumsum=g,
+        cu_seqlens=cu_seqlens, chunk_indices=chunk_indices,
     )
     h, v_new, final_state = chunk_gated_delta_rule_fwd_h(
-        k=k,
-        w=w,
-        u=u,
-        g=g,
-        initial_state=initial_state,
+        k=k, w=w, u=u, g=g, initial_state=initial_state,
         output_final_state=output_final_state,
-        cu_seqlens=cu_seqlens,
-        chunk_indices=chunk_indices,
+        cu_seqlens=cu_seqlens, chunk_indices=chunk_indices,
         chunk_offsets=chunk_offsets,
     )
     o = chunk_fwd_o(
-        q=q,
-        k=k,
-        v=v_new,
-        h=h,
-        g=g,
-        scale=scale,
-        cu_seqlens=cu_seqlens,
-        chunk_indices=chunk_indices,
+        q=q, k=k, v=v_new, h=h, g=g, scale=scale,
+        cu_seqlens=cu_seqlens, chunk_indices=chunk_indices,
         core_attn_out=core_attn_out,
     )
-    if SUPPRESS_LEVEL < 3:
-        return g, o, A, final_state, None, None, None
-    elif SUPPRESS_LEVEL >= 3:
-        return g, o, A, final_state, w, h, v_new
+    return g, o, A, final_state, w, h, v_new
 
 
 class ChunkGatedDeltaRuleFunction(torch.autograd.Function):

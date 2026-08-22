@@ -149,6 +149,30 @@ def chunk_scaled_dot_kkt_fwd(
     Returns:
         beta * K * K^T of shape `[B, T, H, BT]` where `BT` is the chunk size.
     """
+    # SM70 CUDA WMMA dispatch: Triton tl.dot does not emit WMMA on SM70
+    # (0 wmma instructions in PTX). Use hand-written CUDA kernel instead.
+    if (current_platform.is_cuda()
+            and current_platform.has_device_capability(70)
+            and not current_platform.has_device_capability(80)
+            and cu_seqlens is not None
+            and chunk_indices is not None
+            and g is not None):
+        # k is [B, T, Hg, K], squeeze B=1 for the CUDA kernel
+        k_4d = k if k.dim() == 4 else k.unsqueeze(0)
+        beta_3d = beta if beta.dim() == 3 else beta.unsqueeze(0)
+        g_3d = g if g is not None and g.dim() == 3 else (
+            g.unsqueeze(0) if g is not None else None)
+        # WMMA requires fp16 input; cast if needed
+        if k_4d.dtype != torch.float16:
+            k_4d = k_4d.to(torch.float16)
+        if beta_3d.dtype != torch.float16:
+            beta_3d = beta_3d.to(torch.float16)
+        if g_3d is not None and g_3d.dtype != torch.float16:
+            g_3d = g_3d.to(torch.float16)
+        return torch.ops._C.fla_kkt_sm70(
+            k_4d, beta_3d, g_3d, cu_seqlens, chunk_indices,
+            len(chunk_indices))
+
     # This kernel is slightly different from fla to support Q/K with different head numbers.
     # In fla, Q/K always have the same head number, so Hg is always equal to H.
     B, T, Hg, K = k.shape

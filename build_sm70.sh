@@ -31,10 +31,16 @@ echo "=== Building target: $TARGET ==="
 PATH="/data/vllm-dev/bin:$PATH" TORCH_CUDA_ARCH_LIST="7.0" \
     ninja -C "$BUILD_DIR" -j32 "$TARGET"
 
-# 复制 .so 到 vllm 包目录
+# 复制 .so 到 vllm 包目录（支持 .abi3.so 和 .cpython-*.so 两种格式）
+SO_FILE=""
 if [ -f "$BUILD_DIR/${TARGET}.abi3.so" ]; then
-    cp "$BUILD_DIR/${TARGET}.abi3.so" "vllm/${TARGET}.abi3.so"
-    echo "=== Installed: vllm/${TARGET}.abi3.so ==="
+    SO_FILE="$BUILD_DIR/${TARGET}.abi3.so"
+elif ls "$BUILD_DIR/${TARGET}".cpython-*.so >/dev/null 2>&1; then
+    SO_FILE=$(ls "$BUILD_DIR/${TARGET}".cpython-*.so | head -1)
+fi
+if [ -n "$SO_FILE" ]; then
+    cp "$SO_FILE" "vllm/$(basename "$SO_FILE")"
+    echo "=== Installed: vllm/$(basename "$SO_FILE") ==="
 fi
 
 # 验证 torch 未被覆盖

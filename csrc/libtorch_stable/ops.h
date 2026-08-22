@@ -212,6 +212,29 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
     int64_t num_partitions, double scale, double k_scale, double v_scale,
     int64_t kv_mode, int64_t xqa);
 
+// FLA SM70 WMMA kernel: K @ K^T for GDN linear attention.
+torch::stable::Tensor fla_kkt_sm70(
+    torch::stable::Tensor k, torch::stable::Tensor beta,
+    torch::stable::Tensor g, torch::stable::Tensor cu_seqlens,
+    torch::stable::Tensor chunk_indices, int64_t NT_total);
+
+std::tuple<torch::stable::Tensor, torch::stable::Tensor> fla_wy_sm70(
+    torch::stable::Tensor k, torch::stable::Tensor v,
+    torch::stable::Tensor beta, torch::stable::Tensor g,
+    torch::stable::Tensor A, torch::stable::Tensor cu_seqlens,
+    torch::stable::Tensor chunk_indices);
+
+std::tuple<torch::stable::Tensor, torch::stable::Tensor,
+           torch::stable::Tensor>
+fla_delta_h_sm70(
+    torch::stable::Tensor k, torch::stable::Tensor w,
+    torch::stable::Tensor u, torch::stable::Tensor g,
+    torch::stable::Tensor cu_seqlens,
+    torch::stable::Tensor chunk_offsets,
+    torch::stable::Tensor initial_state,
+    bool output_final_state,
+    int64_t NT_total);
+
 // DSV3 fused A GEMM: conditionally compiled so declaration and impl
 // registration are in the source file (dsv3_fused_a_gemm.cu)
 

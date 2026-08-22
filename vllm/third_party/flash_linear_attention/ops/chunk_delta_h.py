@@ -10,6 +10,7 @@
 
 import torch
 
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices, prepare_chunk_offsets
@@ -337,6 +338,38 @@ def chunk_gated_delta_rule_fwd_h(
     B, T, Hg, K, V = *k.shape, u.shape[-1]
     H = u.shape[-2]
     BT = chunk_size
+
+    # SM70 CUDA WMMA dispatch
+    if (current_platform.is_cuda()
+            and current_platform.has_device_capability(70)
+            and not current_platform.has_device_capability(80)
+            and cu_seqlens is not None
+            and g is not None
+            and K <= 256):
+        if chunk_indices is None:
+            chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
+        if chunk_offsets is None:
+            chunk_offsets = prepare_chunk_offsets(cu_seqlens, BT)
+        k_4d = k if k.dim() == 4 else k.unsqueeze(0)
+        w_4d = w if w.dim() == 4 else w.unsqueeze(0)
+        u_4d = u if u.dim() == 4 else u.unsqueeze(0)
+        g_3d = g if g.dim() == 3 else g.unsqueeze(0)
+        if k_4d.dtype != torch.float16:
+            k_4d = k_4d.to(torch.float16)
+        if w_4d.dtype != torch.float16:
+            w_4d = w_4d.to(torch.float16)
+        if u_4d.dtype != torch.float16:
+            u_4d = u_4d.to(torch.float16)
+        if g_3d.dtype != torch.float16:
+            g_3d = g_3d.to(torch.float16)
+        h0 = initial_state if initial_state is not None else torch.empty(
+            0, dtype=torch.float32, device=k.device)
+        h, v_new, final_state = torch.ops._C.fla_delta_h_sm70(
+            k_4d, w_4d, u_4d, g_3d, cu_seqlens, chunk_offsets, h0,
+            output_final_state, len(chunk_indices))
+        if not output_final_state:
+            final_state = None
+        return h, v_new, final_state
 
     if chunk_indices is None and cu_seqlens is not None:
         chunk_indices = prepare_chunk_indices(cu_seqlens, chunk_size)

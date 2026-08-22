@@ -347,6 +347,17 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor block_table, Tensor query_start_loc, Tensor seq_lens, "
       "int max_query_len, int num_seqs, int num_partitions, float scale, "
       "float k_scale, float v_scale, int kv_mode, int xqa) -> Tensor");
+  ops.def(
+      "fla_kkt_sm70(Tensor k, Tensor beta, Tensor g, "
+      "Tensor cu_seqlens, Tensor chunk_indices, int NT_total) -> Tensor");
+  ops.def(
+      "fla_wy_sm70(Tensor k, Tensor v, Tensor beta, Tensor g, "
+      "Tensor A, Tensor cu_seqlens, Tensor chunk_indices) "
+      "-> (Tensor, Tensor)");
+  ops.def(
+      "fla_delta_h_sm70(Tensor k, Tensor w, Tensor u, Tensor g, "
+      "Tensor cu_seqlens, Tensor chunk_offsets, Tensor initial_state, "
+      "bool output_final_state, int NT_total) -> (Tensor, Tensor, Tensor)");
 
   // DeepSeek V3 fused A GEMM (SM 9.0+, bf16 only, 1-16 tokens).
   // conditionally compiled so impl registration is in source file
@@ -774,6 +785,9 @@ STABLE_TORCH_LIBRARY_IMPL(_C, CUDA, ops) {
            TORCH_BOX(&flash_attn_sm70_prefill_paged_batched));
   ops.impl("flash_attn_sm70_decode_partitioned",
            TORCH_BOX(&flash_attn_sm70_decode_partitioned));
+  ops.impl("fla_kkt_sm70", TORCH_BOX(&fla_kkt_sm70));
+  ops.impl("fla_wy_sm70", TORCH_BOX(&fla_wy_sm70));
+  ops.impl("fla_delta_h_sm70", TORCH_BOX(&fla_delta_h_sm70));
 
   // DSV3 fused A GEMM: conditionally compiled so impl registration is in
   // source file (dsv3_fused_a_gemm.cu)

@@ -332,20 +332,13 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
                 )
             out.copy_(O)
         else:
-            # FP16 path: paged WMMA kernel (handles GQA internally)
-            for i in range(num_seqs):
-                start = query_start_loc[i].item()
-                end = query_start_loc[i + 1].item()
-                seq_len = seq_lens[i].item()
-                q_len = end - start
-
-                Q = q[start:end].unsqueeze(0).permute(0, 2, 1, 3).contiguous()
-                O = torch.ops._C.flash_attn_sm70_prefill_paged(
-                    Q, kv_cache, block_table[i:i+1],
-                    self.scale, True, seq_len, 1.0, 1.0,
-                )
-                out[start:end] = O.permute(0, 2, 1, 3).reshape(
-                    q_len, q.shape[1], q.shape[2]
-                )
+            # FP16 path: batched paged WMMA kernel (handles all sequences
+            # in a single launch, reads indices on-device).
+            O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(
+                q, kv_cache, block_table, query_start_loc, seq_lens,
+                num_seqs, max_query_len, self.scale,
+                True, 1.0, 1.0, 0,
+            )
+            out.copy_(O)
 
         return output

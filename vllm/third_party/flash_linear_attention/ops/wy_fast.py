@@ -11,6 +11,7 @@
 
 import torch
 
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
 from .index import prepare_chunk_indices
@@ -128,6 +129,31 @@ def recompute_w_u_fwd(
     B, T, Hg, K, V = *k.shape, v.shape[-1]
     H = v.shape[-2]
     BT = A.shape[-1]
+
+    # SM70 CUDA WMMA dispatch
+    if (current_platform.is_cuda()
+            and current_platform.has_device_capability(70)
+            and not current_platform.has_device_capability(80)
+            and cu_seqlens is not None
+            and g_cumsum is not None):
+        if chunk_indices is None:
+            chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
+        k_4d = k if k.dim() == 4 else k.unsqueeze(0)
+        v_4d = v if v.dim() == 4 else v.unsqueeze(0)
+        beta_3d = beta if beta.dim() == 3 else beta.unsqueeze(0)
+        g_3d = g_cumsum if g_cumsum.dim() == 3 else g_cumsum.unsqueeze(0)
+        if k_4d.dtype != torch.float16:
+            k_4d = k_4d.to(torch.float16)
+        if v_4d.dtype != torch.float16:
+            v_4d = v_4d.to(torch.float16)
+        if beta_3d.dtype != torch.float16:
+            beta_3d = beta_3d.to(torch.float16)
+        if g_3d.dtype != torch.float16:
+            g_3d = g_3d.to(torch.float16)
+        A_f32 = A if A.dtype == torch.float32 else A.float()
+        w, u = torch.ops._C.fla_wy_sm70(
+            k_4d, v_4d, beta_3d, g_3d, A_f32, cu_seqlens, chunk_indices)
+        return w, u
 
     if chunk_indices is None and cu_seqlens is not None:
         chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
