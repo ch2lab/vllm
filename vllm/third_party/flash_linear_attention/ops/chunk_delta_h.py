@@ -350,6 +350,9 @@ def chunk_gated_delta_rule_fwd_h(
             chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
         if chunk_offsets is None:
             chunk_offsets = prepare_chunk_offsets(cu_seqlens, BT)
+        # SM70 WMMA kernel reads chunk indices as int32.
+        cu_seqlens = cu_seqlens.to(torch.int32)
+        chunk_offsets = chunk_offsets.to(torch.int32)
         k_4d = k if k.dim() == 4 else k.unsqueeze(0)
         w_4d = w if w.dim() == 4 else w.unsqueeze(0)
         u_4d = u if u.dim() == 4 else u.unsqueeze(0)

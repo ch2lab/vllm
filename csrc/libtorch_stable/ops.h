@@ -222,7 +222,7 @@ std::tuple<torch::stable::Tensor, torch::stable::Tensor> fla_wy_sm70(
     torch::stable::Tensor k, torch::stable::Tensor v,
     torch::stable::Tensor beta, torch::stable::Tensor g,
     torch::stable::Tensor A, torch::stable::Tensor cu_seqlens,
-    torch::stable::Tensor chunk_indices);
+    torch::stable::Tensor chunk_indices, int64_t NT_total);
 
 std::tuple<torch::stable::Tensor, torch::stable::Tensor,
            torch::stable::Tensor>

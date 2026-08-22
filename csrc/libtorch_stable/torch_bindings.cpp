@@ -352,7 +352,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "Tensor cu_seqlens, Tensor chunk_indices, int NT_total) -> Tensor");
   ops.def(
       "fla_wy_sm70(Tensor k, Tensor v, Tensor beta, Tensor g, "
-      "Tensor A, Tensor cu_seqlens, Tensor chunk_indices) "
+      "Tensor A, Tensor cu_seqlens, Tensor chunk_indices, int NT_total) "
       "-> (Tensor, Tensor)");
   ops.def(
       "fla_delta_h_sm70(Tensor k, Tensor w, Tensor u, Tensor g, "

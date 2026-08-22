@@ -169,6 +169,9 @@ def chunk_scaled_dot_kkt_fwd(
             beta_3d = beta_3d.to(torch.float16)
         if g_3d is not None and g_3d.dtype != torch.float16:
             g_3d = g_3d.to(torch.float16)
+        # SM70 WMMA kernel reads chunk indices as int32.
+        cu_seqlens = cu_seqlens.to(torch.int32)
+        chunk_indices = chunk_indices.to(torch.int32)
         return torch.ops._C.fla_kkt_sm70(
             k_4d, beta_3d, g_3d, cu_seqlens, chunk_indices,
             len(chunk_indices))

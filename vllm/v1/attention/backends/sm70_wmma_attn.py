@@ -10,14 +10,17 @@ to reuse its metadata builder and KV cache layout.
 from typing import ClassVar
 
 import torch
+from dataclasses import replace
 
 from vllm.config.cache import CacheDType
 from vllm.platforms.interface import DeviceCapability
+from vllm.utils.torch_utils import nvfp4_kv_cache_full_dim
 from vllm.v1.attention.backends.triton_attn import (
     TritonAttentionBackend,
     TritonAttentionImpl,
     TritonAttentionMetadata,
 )
+from vllm.v1.kv_cache_layout import KVCacheLayout
 
 
 class SM70WMMAAttentionBackend(TritonAttentionBackend):
@@ -33,6 +36,28 @@ class SM70WMMAAttentionBackend(TritonAttentionBackend):
     @staticmethod
     def get_name() -> str:
         return "SM70_WMMA_ATTN"
+
+    @classmethod
+    def customize_spec(cls, spec: "AttentionSpec") -> "AttentionSpec":
+        """NVFP4 stores K and V as separate per-head slots of packed fp4
+        data plus fp8 block scales (same convention as FlashInfer)."""
+        if spec.state_content_bytes is not None or not spec.kv_quant_mode.is_nvfp4:
+            return spec
+        hs = nvfp4_kv_cache_full_dim(spec.head_size)
+        assert hs == nvfp4_kv_cache_full_dim(spec.head_size_v), (
+            "nvfp4 with asymmetric K/V head sizes not yet supported"
+        )
+        return replace(
+            spec,
+            num_head_slots=2 * spec.num_kv_heads,
+            state_content_bytes=hs,
+        )
+
+    @classmethod
+    def supported_kv_cache_layouts(cls) -> tuple[KVCacheLayout, ...]:
+        # The custom WMMA kernels address heads/states directly and need the
+        # per-layer [B, H, N, C] identity layout (LBHNC / "HND").
+        return (KVCacheLayout.LBHNC,)
 
     @staticmethod
     def get_impl_cls() -> type["SM70WMMAAttentionImpl"]:
@@ -140,11 +165,16 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
             num_tokens = key.shape[0]
             if num_tokens == 0:
                 return
+        else:
+            # Capture placeholders may carry out-of-range slot ids; clamp so
+            # the scattered values stay in-bounds (results are discarded).
+            slot_mapping = slot_mapping.clamp(
+                max=kv_cache.shape[0] * kv_cache.shape[2] - 1)
 
         hs = self.head_size
         DD = hs // 2
         SD = hs // 16
-        num_kv_heads = kv_cache.shape[1] // 2
+        num_kv_heads = key.shape[1]
         BS = kv_cache.shape[2]
         page = kv_cache.stride(0)
         dev = key.device
@@ -172,19 +202,18 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         blk = slot_mapping // BS
         off = slot_mapping % BS
         hidx = torch.arange(num_kv_heads, device=dev)
-        tok_d = blk[:, None, None] * page + (off * DD)[:, None, None]
-        tok_s = blk[:, None, None] * page + (off * SD)[:, None, None]
+        C = DD + SD
+        tok = blk[:, None, None] * page + (off * C)[:, None, None]
         h = hidx[None, :, None]
 
         dpos = torch.arange(DD, device=dev)
-        data_idx = tok_d + h * (BS * DD) + dpos[None, None, :]
+        data_idx = tok + h * (BS * C) + dpos[None, None, :]
         spos = torch.arange(SD, device=dev)
-        scale_base = num_kv_heads * BS * DD
-        scale_idx = tok_s + scale_base + h * (BS * SD) + spos[None, None, :]
+        scale_idx = tok + h * (BS * C) + DD + spos[None, None, :]
 
         flat[data_idx] = kb
         flat[scale_idx] = ksf
-        v_side = num_kv_heads * BS * (DD + SD)
+        v_side = num_kv_heads * BS * C
         flat[data_idx + v_side] = vb
         flat[scale_idx + v_side] = vsf
 
@@ -300,9 +329,9 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
                 else kv_cache
             )
             if self._sm70_nvfp4_kv:
-                # K/V are separate head rows; hand the kernel the K rows
-                # (V is reached at +num_kv_heads*stride_head inside).
-                kv_cache_u8 = kv_cache_u8[:, : key.shape[1]]
+                # NVFP4 layout: K slots = first num_kv_heads rows, V slots =
+                # the following num_kv_heads rows in the same tensor; the
+                # kernel reaches V at +num_kv_heads*stride_head.
                 kv_mode = 3
             else:
                 kv_mode = 1

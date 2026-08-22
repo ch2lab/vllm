@@ -151,8 +151,12 @@ def recompute_w_u_fwd(
         if g_3d.dtype != torch.float16:
             g_3d = g_3d.to(torch.float16)
         A_f32 = A if A.dtype == torch.float32 else A.float()
+        # SM70 WMMA kernel reads chunk indices as int32.
+        cu_seqlens = cu_seqlens.to(torch.int32)
+        chunk_indices = chunk_indices.to(torch.int32)
         w, u = torch.ops._C.fla_wy_sm70(
-            k_4d, v_4d, beta_3d, g_3d, A_f32, cu_seqlens, chunk_indices)
+            k_4d, v_4d, beta_3d, g_3d, A_f32, cu_seqlens, chunk_indices,
+            len(chunk_indices))
         return w, u
 
     if chunk_indices is None and cu_seqlens is not None:

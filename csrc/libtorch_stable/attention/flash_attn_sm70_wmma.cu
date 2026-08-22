@@ -408,10 +408,9 @@ void flash_attn_sm70_paged_kernel(
         }
       }
     } else if constexpr (KV_MODE == 3) {
-      // NVFP4 engine layout, per side: [data (KVH*BS*HD/2 B) |
-      // scales (KVH*BS*HD/16 B)], NHD within each region.
-      // cache_base_fp8 carries a kv_head pre-offset; remove it — this mode
-      // indexes heads explicitly.
+      // NVFP4: per-head slot = [fp4 data (HD/2 B) | fp8 scales (HD/16 B)];
+      // K slots are the first num_kv_heads rows, V rows follow. Host-passed
+      // strides make the addressing layout-agnostic (LBHNC).
       const uint8_t* side =
           cache_base_fp8 - (int64_t)kv_head_idx * stride_head;
       constexpr int DD = HD / 2;   // data bytes per slot
@@ -422,16 +421,13 @@ void flash_attn_sm70_paged_kernel(
         if (gkv < kv_len && n < actual_bn) {
           int blk = bt[gkv / block_size];
           int off = gkv % block_size;
-          int64_t page = (int64_t)blk * stride_block;
+          int64_t koff = (int64_t)blk * stride_block +
+              (int64_t)kv_head_idx * stride_head +
+              (int64_t)off * stride_slot;
           uint raw = *reinterpret_cast<const uint*>(
-              side + page +
-              (int64_t)kv_head_idx * block_size * DD + off * DD + d8 / 2);
+              side + koff + d8 / 2);
           float bs = __half2float(fp8e4m3_to_half_scaled(
-              side[page +
-                  (int64_t)num_kv_heads * block_size * DD +
-                  (int64_t)kv_head_idx * block_size * SD + off * SD +
-                  d8 / 16],
-              k_scale));
+              side[koff + DD + d8 / 16], k_scale));
           #pragma unroll
           for (int i = 0; i < 8; i++) {
             int nib = (raw >> (i * 4)) & 0xF;
@@ -564,7 +560,8 @@ void flash_attn_sm70_paged_kernel(
         }
       }
     } else if constexpr (KV_MODE == 3) {
-      // NVFP4 engine layout: V side starts after the K side within the page.
+      // NVFP4: V slots are the num_kv_heads rows after the K rows; each
+      // slot = [fp4 data (HD/2 B) | fp8 scales (HD/16 B)] (LBHNC).
       const uint8_t* side =
           cache_base_fp8 - (int64_t)kv_head_idx * stride_head +
           (int64_t)num_kv_heads * stride_head;
@@ -576,16 +573,13 @@ void flash_attn_sm70_paged_kernel(
         if (gkv < kv_len && n < actual_bn) {
           int blk = bt[gkv / block_size];
           int off = gkv % block_size;
-          int64_t page = (int64_t)blk * stride_block;
+          int64_t koff = (int64_t)blk * stride_block +
+              (int64_t)kv_head_idx * stride_head +
+              (int64_t)off * stride_slot;
           uint raw = *reinterpret_cast<const uint*>(
-              side + page +
-              (int64_t)kv_head_idx * block_size * DD + off * DD + d8 / 2);
+              side + koff + d8 / 2);
           float bs = __half2float(fp8e4m3_to_half_scaled(
-              side[page +
-                  (int64_t)num_kv_heads * block_size * DD +
-                  (int64_t)kv_head_idx * block_size * SD + off * SD +
-                  d8 / 16],
-              v_scale));
+              side[koff + DD + d8 / 16], v_scale));
           #pragma unroll
           for (int i = 0; i < 8; i++) {
             int nib = (raw >> (i * 4)) & 0xF;
