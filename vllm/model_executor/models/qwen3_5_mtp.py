@@ -181,10 +181,10 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         # Draft inputs can carry -1 stubs (rejected/padded draft positions)
         # under async scheduling; embedding them trips indexSelectSmallIndex.
         # Clamp to a valid token so the forward stays in bounds; the draft is
-        # rejected by verification anyway.
-        if input_ids.numel() and (input_ids < 0).any():
-            input_ids = input_ids.clamp(min=1)
-        return self.embed_tokens(input_ids)
+        # rejected by verification anyway. The clamp is unconditional to keep
+        # it a pure GPU op (a data-dependent check would sync and break CUDA
+        # graph capture).
+        return self.embed_tokens(input_ids.clamp(min=1))
 
     def forward(
         self,
