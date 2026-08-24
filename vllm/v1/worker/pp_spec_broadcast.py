@@ -81,44 +81,6 @@ def count_valid_sampled_tokens_per_req(sampled_token_ids: torch.Tensor) -> torch
     return (sampled_token_ids != -1).sum(dim=1)
 
 
-def sanitize_token_zero_col(
-    sampled_token_ids: torch.Tensor, width: int
-) -> None:
-    """Replace token-0 ('!') entries with the row's last valid non-0 token.
-
-    Token-0 storms: a corrupted/garbage logits row makes the sampler emit 0
-    (the '!' token); the 0 then enters the next step's input grid and
-    reproduces, pinning the request in an all-'!' loop. The committed bonus
-    is NOT always the last column: when every draft is rejected the grid is
-    ``[bonus, -1, -1]`` (bonus at column 0), so a last-column-only sweep
-    misses it. Sweep every column: legitimate text never contains token 0,
-    so any 0 is a garbage-logits artifact. Replacing 0 with the row's last
-    positive token (or -1 when none) breaks the loop.
-    """
-    if sampled_token_ids.numel() == 0:
-        return
-    # The grid width can be narrower than ``width`` on steps with no spec
-    # tokens (sampled_token_ids is [num_reqs, 1]); always use the tensor's
-    # actual width so the arange/expand below stays in range.
-    width = sampled_token_ids.shape[-1]
-    if width <= 1:
-        return
-    row_last_pos = torch.where(
-        sampled_token_ids > 0,
-        torch.arange(width, device=sampled_token_ids.device).expand_as(sampled_token_ids),
-        sampled_token_ids.new_full((), -1),
-    ).max(dim=1).values
-    fallback = sampled_token_ids.gather(
-        1, row_last_pos.clamp(min=0).unsqueeze(1)
-    ).squeeze(1)
-    fallback = torch.where(row_last_pos >= 0, fallback, fallback.new_full((), -1))
-    replace = sampled_token_ids == 0
-    if replace.any():
-        sampled_token_ids[replace] = fallback.unsqueeze(1).expand(
-            -1, width
-        )[replace]
-
-
 def select_latest_sampled_token_per_req(
     sampled_token_ids: torch.Tensor,
 ) -> torch.Tensor:

@@ -234,7 +234,6 @@ from vllm.v1.worker.pp_spec_broadcast import (
     gather_valid_sampled_tokens_per_req,
     make_pp_control_header,
     num_computed_tokens_drift_correction,
-    sanitize_token_zero_col,
     select_latest_sampled_token_per_req,
 )
 from vllm.v1.worker.ubatch_utils import (
@@ -315,8 +314,6 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
     ):
         self._model_runner_output = model_runner_output
         self._invalid_req_indices = invalid_req_indices
-        self._storm_seen: dict[int, bool] = {}
-        self._storm_printed: dict[int, bool] = {}
 
         # Event on the copy stream so we can synchronize the non-blocking copy.
         # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
@@ -388,27 +385,6 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         output.sampled_token_ids = valid_sampled_token_ids
         output.logprobs = logprobs_lists
 
-        import os as _os
-        if _os.environ.get("PPDBG"):
-            for i, ids in enumerate(valid_sampled_token_ids):
-                if 0 in ids:
-                    print(f"[PPDBG] TOK0 req_idx={i} n={len(ids)} ids={ids}", flush=True)
-        # Unconditional first-occurrence storm detector: logs the first time a
-        # request emits 0 twice in a row (garbage-logits token-0 storm) with
-        # minimal output, so a pristine run can be diagnosed without PPDBG
-        # changing the memory layout. Prints once per request.
-        if not self._storm_seen.get(-1, False):
-            for i, ids in enumerate(valid_sampled_token_ids):
-                if 0 in ids:
-                    prev = self._storm_seen.get(i, False)
-                    if prev and not self._storm_printed.get(i, False):
-                        self._storm_printed[i] = True
-                        print(f"[STORM] first-double-zero req_idx={i} ids={ids} "
-                              f"step_ctx={len(valid_sampled_token_ids)}", flush=True)
-                    self._storm_seen[i] = True
-                else:
-                    self._storm_seen[i] = False
-
         if self._routed_experts_cpu is not None:
             output.routed_experts = self._routed_experts_cpu.tolists()
         del self._routed_experts
@@ -419,9 +395,6 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
             )
             if envs.VLLM_RAISE_ON_LOGIT_NANS:
                 raise_if_nan_logits(output.num_nans_in_logits)
-            import os as _os
-            if _os.environ.get("PPDBG") and output.num_nans_in_logits:
-                print(f"[PPDBG] NANS {output.num_nans_in_logits}", flush=True)
         del self._num_nans
 
         if self._has_fault is not None and self._has_fault.item():
@@ -641,8 +614,8 @@ class GPUModelRunner(
         # writer of input_batch.prev_sampled_token_ids / _draft_token_ids.
         self._pp_pending_round: PPReceiveRound | None = None
         self._pp_round_event = threading.Event()
-        # Round counters for the async sampled/draft broadcast handoff. These let
-        # PPDBG detect a partial/stale round being consumed.
+        # Round counters for the async sampled/draft broadcast handoff, used to
+        # detect a partial/stale round being consumed.
         self._pp_round_gen = 0
         self._pp_launched_gen = -1
         self._pp_waited_gen = -1
@@ -1542,12 +1515,6 @@ class GPUModelRunner(
             # Update the cached states.
             req_state.num_computed_tokens = num_computed_tokens
 
-            import os as _os
-            if _os.environ.get("PPDBG"):
-                print(f"[PPDBG] NCT req={req_id[:18]} nct={num_computed_tokens} "
-                      f"drafts={req_state.prev_num_draft_len} "
-                      f"nt={req_state.num_tokens}", flush=True)
-
             if not is_last_rank:
                 if not req_data.new_token_ids:
                     # Async scheduled PP: Sampled tokens propagated via GPU broadcast.
@@ -1734,15 +1701,6 @@ class GPUModelRunner(
         self.num_accepted_tokens.gpu[:num_reqs] = self.num_accepted_tokens.gpu[
             :num_reqs
         ].clamp(min=1)
-        # Token-0 ('!') storm defense: garbage logits make the sampler emit 0
-        # at a committed position. The bonus is NOT always the last column
-        # (all-reject rows are [bonus, -1, -1]), so sanitize every column here,
-        # before the grid feeds the next step's inputs on this rank and the
-        # broadcasted one on the other ranks. Legitimate text never contains
-        # token 0.
-        sanitize_token_zero_col(
-            output_token_ids[:num_reqs], self.num_spec_tokens + 1
-        )
 
         if self.cache_config.mamba_cache_mode == "align":
             # Fused GPU postprocess: state copies + per-request accepted-token
@@ -2102,70 +2060,11 @@ class GPUModelRunner(
         # so convert draft_token_ids to torch.int32 here.
         draft_token_ids = self._draft_token_ids.to(dtype=torch.int32)
 
-        import os
-        if os.environ.get("PPDBG"):
-            neg = (draft_token_ids < 0).sum().item()
-            neg_src = (draft_token_ids.flatten()[prev_draft_token_indices_tensor] < 0).sum().item()
-            if neg or neg_src:
-                print(f"[PPDBG] NEG_DRAFT neg={neg} neg_src={neg_src} shape={tuple(draft_token_ids.shape)} "
-                      f"first={draft_token_ids.flatten()[:20].tolist()}", flush=True)
-            # Race check: the buffer we are about to read must be the one whose
-            # broadcast was waited in _pp_finish_receive_and_backfill. If the
-            # output-proc thread is concurrently launching the next round
-            # (sample_tokens overlapping this execute_model), the scatter can
-            # either read the previous round's stale grid (launch not published
-            # yet) or a not-yet-filled new grid (finish skipped the draft wait).
-            # Both leave round_gen ahead of waited_gen. Only the non-last rank
-            # consumes broadcast rounds.
-            wrong_round = (
-                not get_pp_group().is_last_rank
-                and self._pp_round_gen != self._pp_waited_gen
-            )
-            waited_ptr = getattr(self, "_pp_waited_draft_ptr", None)
-            cur_ptr = draft_token_ids.data_ptr()
-            ptr_changed = (
-                waited_ptr is not None
-                and waited_ptr != cur_ptr
-                and not get_pp_group().is_last_rank
-            )
-            max_prev = max(prev_draft_token_indices) if prev_draft_token_indices else -1
-            rows = draft_token_ids.shape[0]
-            oob = (
-                max_prev >= 0
-                and max_prev + 1 > rows * self.prev_num_spec_tokens
-            )
-            print(f"[PPDBG] SCATTER waited_gen={self._pp_waited_gen} "
-                  f"launched_gen={self._pp_launched_gen} round_gen={self._pp_round_gen} "
-                  f"wrong_round={wrong_round} ptr_changed={ptr_changed} "
-                  f"ptr={cur_ptr} waited_ptr={waited_ptr} "
-                  f"shape={tuple(draft_token_ids.shape)} prev_num_spec={self.prev_num_spec_tokens} "
-                  f"max_prev_idx={max_prev} oob={oob} n_spec_slots={len(spec_flattened_indices)} "
-                  f"vals={draft_token_ids.flatten()[prev_draft_token_indices_tensor][:8].tolist()}",
-                  flush=True)
-            self.input_ids.gpu.scatter_(
-                dim=0,
-                index=draft_tokens_index_tensor,
-                src=draft_token_ids.flatten()[prev_draft_token_indices_tensor],
-            )
-            chk = self.input_ids.gpu[:64]
-            neg_in = (chk < 0).sum().item()
-            if neg_in:
-                print(f"[PPDBG] NEG_INPUT after scatter: {neg_in} in first64 ids={chk.tolist()}", flush=True)
-            # Cross-rank input comparison: dump this step's input ids (after
-            # sampled+draft scatter) so the last rank's verification inputs can
-            # be compared against the non-last rank's. Only dump the first req.
-            if prev_indices:
-                n_tok = int(cu_num_tokens[0].item())
-                lo = max(0, n_tok - 6)
-                print(f"[PPDBG] INPUT_DUMP rank={get_pp_group().rank_in_group} "
-                      f"req={self.input_batch.req_ids[0][:20]} n_tok={n_tok} "
-                      f"ids={self.input_ids.gpu[lo:n_tok].tolist()}", flush=True)
-        else:
-            self.input_ids.gpu.scatter_(
-                dim=0,
-                index=draft_tokens_index_tensor,
-                src=draft_token_ids.flatten()[prev_draft_token_indices_tensor],
-            )
+        self.input_ids.gpu.scatter_(
+            dim=0,
+            index=draft_tokens_index_tensor,
+            src=draft_token_ids.flatten()[prev_draft_token_indices_tensor],
+        )
 
     def _get_encoder_seq_lens(
         self,
@@ -3990,35 +3889,12 @@ class GPUModelRunner(
 
         draft_probs = self._get_spec_decode_draft_probs(spec_decode_metadata)
 
-        import os as _os
-        if _os.environ.get("PPDBG") and logits is not None and logits.numel():
-            lm = logits.max(dim=1).values
-            ninf = torch.isinf(lm) & (lm < 0)
-            n = int(ninf.sum())
-            if n:
-                idx = ninf.nonzero().squeeze(1)
-                print(f"[PPDBG] LOGITS_NEGINF rows={n}/{lm.numel()} "
-                      f"first={idx[:20].tolist()} shape={tuple(logits.shape)}", flush=True)
-
         sampler_output = self.rejection_sampler(
             spec_decode_metadata,
             draft_probs,
             logits,
             sampling_metadata,
         )
-        import os as _os2
-        if _os2.environ.get("PPDBG"):
-            st = sampler_output.sampled_token_ids
-            if st is not None and st.numel():
-                all_minus1 = bool((st == -1).all(dim=1).any())
-                if all_minus1 or _os2.environ.get("PPDBG_ALL"):
-                    nnan = int(torch.isnan(logits).sum()) if logits is not None else -1
-                    ninf = int(torch.isinf(logits).sum()) if logits is not None else -1
-                    lmin = float(logits.min()) if logits is not None else float("nan")
-                    lmax = float(logits.max()) if logits is not None else float("nan")
-                    print(f"[PPDBG] SAMPLE_BAD rows={st.shape} allminus1_rows={int((st==-1).all(dim=1).sum())} "
-                          f"nan={nnan} inf={ninf} lmin={lmin:.3f} lmax={lmax:.3f} "
-                          f"first={st.flatten()[:8].tolist()}", flush=True)
         return sampler_output
 
     def _bookkeeping_sync(
@@ -5243,12 +5119,6 @@ class GPUModelRunner(
         ``[num_reqs, num_spec + 1]`` (accepted drafts + bonus, ``-1``-padded). The
         transport is width-agnostic; the receiver allocates the matching width.
         """
-        import os
-        if os.environ.get("PPDBG"):
-            print(f"[PPDBG] SEND shape={tuple(sampled_token_ids.shape)} "
-                  f"reqs={self.input_batch.req_ids} chunked={self._is_all_reqs_chunked_prefill()} "
-                  f"step={self.input_batch.num_tokens_no_spec.tolist() if hasattr(self.input_batch,'num_tokens_no_spec') else '?'} "
-                  f"data={sampled_token_ids[:2].tolist() if sampled_token_ids.numel() else '[]'}", flush=True)
         pp = get_pp_group()
         assert pp.is_last_rank
         # Participation header: 1 = real payload follows, 0 = all-chunked-prefill
@@ -5275,16 +5145,6 @@ class GPUModelRunner(
                     -1,
                 )
                 sampled_token_ids = torch.cat([sampled_token_ids, pad], dim=-1)
-            # Token-0 ('!') storm defense: a garbage logits row makes the sampler
-            # emit 0 at the bonus column; the 0 then enters the next step's input
-            # grid and reproduces, pinning the request in an all-'!' loop forever
-            # (observed as deterministic-ish corruption after batch changes under
-            # NVFP4 KV). Replace the token-0 entries with the row's last valid
-            # non-0 token so the loop cannot self-sustain; the rare legitimate 0
-            # in real text is negligible vs. this failure mode. Pure-GPU
-            # vectorized (no per-row Python loop) so prefill-sized grids stay
-            # fast.
-            sanitize_token_zero_col(sampled_token_ids, width)
         else:
             sampled_token_ids = sampled_token_ids.new_full(
                 (self.input_batch.num_reqs, width), -1
@@ -5344,11 +5204,6 @@ class GPUModelRunner(
                 (num_reqs, width), -1, dtype=torch.int32, device=self.device
             )
         broadcast_sampled_token_ids(dt, pp.device_group, pp.rank)
-        import os
-        if os.environ.get("PPDBG"):
-            print(f"[PPDBG] SEND_DRAFT reqs={self.input_batch.req_ids} "
-                  f"shape={tuple(dt.shape)} ptr={dt.data_ptr()} "
-                  f"vals={dt.flatten()[:8].tolist()}", flush=True)
 
     def _pp_receive_prev_sampled_token_ids_to_input_batch(self) -> None:
         """Launch non-blocking sampled-token/draft receives and publish the round.
@@ -5362,10 +5217,6 @@ class GPUModelRunner(
         broadcast the other rank has not reached yet when async scheduling
         overlaps sample_tokens(N) with execute_model(N+1).
         """
-        import os
-        if os.environ.get("PPDBG"):
-            print(f"[PPDBG] RECV(launch) reqs={self.input_batch.req_ids} "
-                  f"chunked={self._is_all_reqs_chunked_prefill()}", flush=True)
         pp = get_pp_group()
         assert not pp.is_last_rank
         self._pp_round_gen += 1
@@ -5417,10 +5268,6 @@ class GPUModelRunner(
                 group=pp.device_group,
                 async_op=True,
             )
-            if os.environ.get("PPDBG"):
-                print(f"[PPDBG] RECV_DRAFT gen={gen} reqs={num_reqs} "
-                      f"ptr={draft_buf.data_ptr()} "
-                      f"shape={tuple(draft_buf.shape)}", flush=True)
         round = PPReceiveRound(
             gen=gen,
             recv=recv,
@@ -5448,10 +5295,8 @@ class GPUModelRunner(
         consumer never sees a partially-launched round. The consumer is the
         only thread that mutates ``input_batch`` / ``_draft_token_ids``.
         """
-        import os
         pp = get_pp_group()
         assert not pp.is_last_rank
-        ppdbg = os.environ.get("PPDBG")
         num_reqs = self.input_batch.num_reqs
         # All-chunked-prefill steps must not wait for a round: the producer
         # (sample_tokens) may not run on such steps, so there is nothing to
@@ -5487,10 +5332,6 @@ class GPUModelRunner(
         # only a fail-safe against a stuck producer.
         round = self._pp_pending_round
         if round is None:
-            if ppdbg:
-                print(f"[PPDBG] FINISH_WAIT round_gen={self._pp_round_gen} "
-                      f"launched={self._pp_launched_gen} "
-                      f"reqs={self.input_batch.req_ids}", flush=True)
             while self._pp_pending_round is None:
                 if not self._pp_round_event.wait(timeout=30):
                     logger.warning(
@@ -5549,11 +5390,6 @@ class GPUModelRunner(
         if recv is None:
             self._pp_waited_gen = -1
             return
-        if ppdbg:
-            stale = wait_gen < self._pp_round_gen - 1
-            print(f"[PPDBG] FINISH round_gen={self._pp_round_gen} "
-                  f"wait_gen={wait_gen} stale={stale} n={num_reqs} "
-                  f"reqs={self.input_batch.req_ids}", flush=True)
         round.recv_work.wait()
         # Wait for the cursor broadcast launched alongside the sampled grid.
         last_cursor = None
@@ -5569,11 +5405,6 @@ class GPUModelRunner(
             self._draft_token_ids = draft
             self._pp_waited_gen = wait_gen
             self._pp_waited_draft_ptr = draft.data_ptr()
-            if ppdbg:
-                print(f"[PPDBG] FINISH_DRAFT waited_gen={wait_gen} "
-                      f"ptr={self._pp_waited_draft_ptr} "
-                      f"first={draft.flatten()[:8].tolist() if draft.numel() else []}",
-                      flush=True)
         else:
             self._draft_token_ids = None
             self._pp_waited_gen = -1
@@ -5672,11 +5503,6 @@ class GPUModelRunner(
                     self.input_batch.token_ids_cpu[i, end:last] = fill
                     self.input_batch.is_token_ids[i, end:last] = True
                     self.input_batch.num_tokens_no_spec[i] = last
-                    import os as _os
-                    if _os.environ.get("PPDBG"):
-                        print(f"[PPDBG] CURSOR_ALIGN req={req_id} from={end} to={last} "
-                              f"gap={gap} v={v} pos={pos} "
-                              f"recv={recv[i].tolist()}", flush=True)
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
@@ -8468,11 +8294,6 @@ class GPUModelRunner(
         self._mamba_bufs = None
         self.may_add_encoder_only_layers_to_kv_cache_config()
         self.maybe_add_kv_sharing_layers_to_kv_cache_groups(kv_cache_config)
-        import os as _os
-        if _os.environ.get("PPDBG") and get_pp_group().is_last_rank:
-            for gid, g in enumerate(kv_cache_config.kv_cache_groups):
-                print(f"[PPDBG] KV_GROUP_BEFORE {gid}: {list(g.layer_names)[:12]} "
-                      f"spec={type(g.kv_cache_spec).__name__}", flush=True)
         # NOTE: the MTP/EAGLE KV-group split was REMOVED — it broke the block
         # table contract: may_reinitialize_input_batch builds one block table
         # per kv cache group, so the extra eagle group made the runner expect 3
