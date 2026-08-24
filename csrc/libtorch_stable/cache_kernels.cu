@@ -131,8 +131,15 @@ void swap_blocks_batch(const torch::stable::Tensor& src_ptrs,
   // cudaStreamLegacy) with CUDA_ERROR_INVALID_VALUE; route it to the per-copy
   // fallback below, which is correct on any stream. Real and per-thread-default
   // streams take the batch fast path.
+  int compute_capability_major = 0;
+  cudaDeviceGetAttribute(&compute_capability_major,
+                         cudaDevAttrComputeCapabilityMajor, 0);
+  // cuMemcpyBatchAsync is not reliable on Blackwell (SM100+); use the
+  // individual-copy path there. In particular, GPU-to-host KV offload can
+  // return CUDA_ERROR_INVALID_VALUE for otherwise valid pointer batches.
+  const bool batch_copy_supported = compute_capability_major < 10;
   const bool usable_stream = stream != nullptr && stream != cudaStreamLegacy;
-  if (batch_fn != nullptr && usable_stream) {
+  if (batch_fn != nullptr && batch_copy_supported && usable_stream) {
     CUmemcpyAttributes attr = {};
     // ANY lets the DMA engine prefetch source bytes out of stream order,
     // which is only safe when no GPU stream is concurrently writing the
