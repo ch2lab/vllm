@@ -67,7 +67,12 @@ class DSparkMarkovHead(nn.Module):
             draft_vocab_size,
             markov_rank,
             bias=False,
-            quant_config=quant_config,
+            # The checkpoint's quantization_config ignores markov_head* (and the
+            # stored weight is the un-packed [V, rank] form), but passing the
+            # quant config here packs the hidden dim to rank//2 and the default
+            # weight_loader then trips a shape assert. Keep it un-quantized to
+            # match the stored weight.
+            # quant_config=quant_config,
             prefix=maybe_prefix(prefix, "markov_w2"),
             disable_tp=True,
         )
