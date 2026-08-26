@@ -921,15 +921,18 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             assert self.kv_cache_spec.dtype == self.model_config.dtype
             self.kv_cache_dtype = self.kv_cache_spec.dtype
 
-        if self.is_kvcache_nvfp4 and get_kv_cache_layout() != "HND":
+        if (
+            self.is_kvcache_nvfp4
+            and get_flashinfer_layout_string(self.kv_cache_layout) != "HND"
+        ):
             # The NVFP4 per-side [data | scale] carve is only byte-coherent
             # under the head-major HND layout (see
-            # FlashInferBackend.get_required_kv_cache_layout). NHD would
+            # FlashInferBackend.supported_kv_cache_layouts). NHD would
             # silently corrupt the cache, so fail at init instead.
             raise ValueError(
                 "NVFP4 KV cache requires the HND KV cache layout; resolved "
-                f"layout is {get_kv_cache_layout()!r}. Unset "
-                "VLLM_KV_CACHE_LAYOUT or set it to 'HND'."
+                f"layout is {get_flashinfer_layout_string(self.kv_cache_layout)!r}. "
+                "Unset VLLM_KV_CACHE_LAYOUT or set it to 'HND'."
             )
 
         # Compute per-phase Q dtype.  On SM90 (XQA decode), the prefill and
@@ -1440,7 +1443,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 backend = "auto"
             self._mm_prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
                 self._get_workspace_buffer(),
-                get_kv_cache_layout(),
+                get_flashinfer_layout_string(self.kv_cache_layout),
                 backend=backend,
             )
         return self._mm_prefill_wrapper
