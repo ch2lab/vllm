@@ -1564,21 +1564,39 @@ def test_hybrid_cache_integration(default_vllm_config, dist_init):
     assert _is_req_state_block_table_match(runner, req_id)
 
 
+def _uniform_decode_runner(
+    num_computed_tokens: list[int], num_prompt_tokens: list[int]
+) -> SimpleNamespace:
+    """Minimal stand-in for the `self` used by _is_uniform_decode."""
+    return SimpleNamespace(
+        input_batch=SimpleNamespace(
+            num_computed_tokens_cpu=np.array(num_computed_tokens),
+            num_prompt_tokens=np.array(num_prompt_tokens),
+        )
+    )
+
+
 def test_is_uniform_decode() -> None:
+    # All requests past their prompt, i.e. genuinely decoding.
+    decode16 = _uniform_decode_runner([10] * 16, [8] * 16)
+    decode7 = _uniform_decode_runner([10] * 7, [8] * 7)
     # Normal
     assert GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=1,
         uniform_decode_query_len=1,
         num_tokens=16,
         num_reqs=16,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=2,
         uniform_decode_query_len=1,
         num_tokens=16,
         num_reqs=16,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=1,
         uniform_decode_query_len=1,
         num_tokens=16,
@@ -1586,25 +1604,40 @@ def test_is_uniform_decode() -> None:
     )
     # Spec decoding
     assert GPUModelRunner._is_uniform_decode(
+        decode7,
         max_num_scheduled_tokens=5,
         uniform_decode_query_len=5,
         num_tokens=30,
         num_reqs=6,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode7,
         max_num_scheduled_tokens=5,
         uniform_decode_query_len=4,
         num_tokens=30,
         num_reqs=6,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode7,
         max_num_scheduled_tokens=5,
         uniform_decode_query_len=5,
         num_tokens=30,
         num_reqs=7,
     )
+    # A batch that aliases the uniform-decode shape but contains a prefill
+    # (some request still inside its prompt) must NOT be treated as uniform
+    # decode -- this is the GDN state-loss bug (vllm-project/vllm#53051).
+    prefill_alias = _uniform_decode_runner([2, 8, 8, 8], [4, 8, 8, 8])
+    assert not GPUModelRunner._is_uniform_decode(
+        prefill_alias,
+        max_num_scheduled_tokens=4,
+        uniform_decode_query_len=4,
+        num_tokens=16,
+        num_reqs=4,
+    )
     # Force uniform decode
     assert GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=1,
         uniform_decode_query_len=1,
         num_tokens=16,
@@ -1612,6 +1645,7 @@ def test_is_uniform_decode() -> None:
         force_uniform_decode=True,
     )
     assert GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=2,
         uniform_decode_query_len=1,
         num_tokens=16,
@@ -1619,6 +1653,7 @@ def test_is_uniform_decode() -> None:
         force_uniform_decode=True,
     )
     assert GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=1,
         uniform_decode_query_len=1,
         num_tokens=16,
@@ -1626,6 +1661,7 @@ def test_is_uniform_decode() -> None:
         force_uniform_decode=True,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=1,
         uniform_decode_query_len=1,
         num_tokens=16,
@@ -1633,6 +1669,7 @@ def test_is_uniform_decode() -> None:
         force_uniform_decode=False,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=2,
         uniform_decode_query_len=1,
         num_tokens=16,
@@ -1640,6 +1677,7 @@ def test_is_uniform_decode() -> None:
         force_uniform_decode=False,
     )
     assert not GPUModelRunner._is_uniform_decode(
+        decode16,
         max_num_scheduled_tokens=1,
         uniform_decode_query_len=1,
         num_tokens=16,

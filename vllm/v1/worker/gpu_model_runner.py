@@ -4109,8 +4109,8 @@ class GPUModelRunner(
             **model_kwargs,
         )
 
-    @staticmethod
     def _is_uniform_decode(
+        self,
         max_num_scheduled_tokens: int,
         uniform_decode_query_len: int,
         num_tokens: int,
@@ -4121,13 +4121,26 @@ class GPUModelRunner(
         Checks if it's a decode batch with same amount scheduled tokens
         across all requests.
         """
-        return (
+        if force_uniform_decode is not None:
+            return force_uniform_decode
+        if not (
+            max_num_scheduled_tokens == uniform_decode_query_len
+            and num_tokens == max_num_scheduled_tokens * num_reqs
+        ):
+            return False
+        # Shape check alone misclassifies prefills under spec decode
+        # (uniform_decode_query_len = 1 + num_spec_tokens): a batch of prompts
+        # scheduled with exactly that many tokens each aliases the uniform
+        # decode shape, and dispatching it into the spec-decode cudagraph skips
+        # GDN/hybrid recurrent-state writes -> zeroed state -> garbage output
+        # (vllm-project/vllm#53051). Only a batch where every request is past
+        # its prompt is genuinely uniform decode.
+        input_batch = self.input_batch
+        return bool(
             (
-                (max_num_scheduled_tokens == uniform_decode_query_len)
-                and (num_tokens == max_num_scheduled_tokens * num_reqs)
-            )
-            if force_uniform_decode is None
-            else force_uniform_decode
+                input_batch.num_computed_tokens_cpu[:num_reqs]
+                >= input_batch.num_prompt_tokens[:num_reqs]
+            ).all()
         )
 
     def _allow_microbatching(
