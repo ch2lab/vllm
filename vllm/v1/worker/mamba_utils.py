@@ -439,6 +439,19 @@ def postprocess_mamba_fused_kernel(
     if src_block_idx == dest_block_idx and accept_token_bias == 0:
         return
 
+    # Guard against a backward copy. preprocess_mamba already migrated the
+    # running state forward (prev -> curr block) before this kernel runs, so
+    # a dest that precedes src here would overwrite that migration with the
+    # pre-move state, corrupting the GDN/linear-attention running state for
+    # every later token (garbled output on long, block-aligned contexts).
+    # The only legitimate copies here are same-block slides (src == dest,
+    # with accept_token_bias shifting the conv window) and, in principle,
+    # forward migrations (src < dest, the cross-block case handled by
+    # preprocess). A backward copy (src > dest) can only overwrite the
+    # migration, so it is always skipped.
+    if src_block_idx > dest_block_idx:
+        return
+
     bt_row_idx = batch_idx if HAS_IDX_MAPPING else req_idx
     _copy_mamba_state_block(
         state_idx,
@@ -1176,6 +1189,11 @@ def collect_mamba_copy_meta(
     forward_context: dict[str, Any],
 ) -> None:
     if src_block_idx == dest_block_idx and accept_token_bias == 0:
+        return
+    # Mirror the fused-kernel guard: never copy backward. preprocess_mamba
+    # already migrated the running state forward, so a dest before src here
+    # would overwrite that migration and corrupt the running state.
+    if src_block_idx > dest_block_idx:
         return
 
     src_ptrs_np = copy_bufs.src_ptrs.np
