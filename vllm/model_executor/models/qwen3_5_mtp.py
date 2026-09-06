@@ -142,7 +142,11 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids)
+        # Draft inputs can carry -1 stubs (rejected/padded draft positions)
+        # under async scheduling; embedding them trips indexSelectSmallIndex.
+        # Clamp to a valid token so the forward stays in bounds; the draft is
+        # rejected by verification anyway.
+        return self.embed_tokens(input_ids.clamp(min=1))
 
     def forward(
         self,

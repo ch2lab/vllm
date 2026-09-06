@@ -21,6 +21,15 @@ def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
     speculative_config = vllm_config.speculative_config
     assert speculative_config is not None
     draft_model_config = speculative_config.draft_model_config
+
+    # The drafter reuses the target's KV cache (DFlash cross-attention reads
+    # the target's block table), so its KV-cache dtype MUST match the target's.
+    # Do NOT set cache_config.cache_dtype here (even temporarily): a DFlash
+    # draft has no KV cache of its own, and clobbering the worker's single
+    # cache_config leaks the draft dtype into the target's metadata builders,
+    # which resolve their op dtype from it after model load. Building the draft
+    # with the target's dtype (the global cache_config) keeps every KV cache
+    # consumer consistent.
     # Select an attention backend that supports the drafter's attention: mixing
     # a non-causal layer onto a causal-only backend would fail.
     draft_vllm_config = replace(
@@ -29,14 +38,6 @@ def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
             vllm_config.attention_config,
             use_non_causal=dflash_has_any_non_causal(draft_model_config.hf_config),
             backend=speculative_config.attention_backend,
-        ),
-        cache_config=(
-            replace(
-                vllm_config.cache_config,
-                cache_dtype=speculative_config.kv_cache_dtype,
-            )
-            if speculative_config.kv_cache_dtype is not None
-            else vllm_config.cache_config
         ),
         load_config=get_pp_safe_draft_load_config(vllm_config.load_config),
     )
