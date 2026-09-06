@@ -1344,6 +1344,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.model_state.num_new_sampled_tokens_per_step,
         )
 
+        # Any residual -1 placeholder in the input grid (async spec-decode
+        # stubs that the draft scatter did not cover) would be embedded as a
+        # negative index -> indexSelectSmallIndex device-side assert. Replace
+        # with token 1 so the forward stays in bounds on both PP ranks.
+        input_grid = self.input_buffers.input_ids[:num_tokens]
+        neg = input_grid < 0
+        if neg.any():
+            input_grid[neg] = 1
+
         # CPU upper bound on seq_lens; padded entries left at zero.
         num_computed_tokens_np = self.req_states.num_computed_tokens_np[idx_mapping_np]
         seq_lens_cpu_upper_bound_np = np.zeros(num_reqs_padded, dtype=np.int32)
