@@ -695,7 +695,13 @@ class Worker(WorkerBase):
         logger.info(
             "Running FlashInfer autotuning early before KV cache allocation."
         )
-        flashinfer_autotune(self.model_runner)
+        # The V2 runner cannot build attention metadata before KV cache
+        # allocation (it needs a KV cache config), so run the autotune dummy
+        # runs with attention skipped. The FlashInfer tuner profiles GEMM ops
+        # only; attention is warmed separately in kernel_warmup.
+        flashinfer_autotune(
+            self.model_runner, skip_attn=self.use_v2_model_runner
+        )
         gc.collect()
         torch.accelerator.empty_cache()
         self._did_flashinfer_autotune_early = True

@@ -291,18 +291,29 @@ def _flashinfer_autotune_token_counts(runner: "GPUModelRunner") -> tuple[int, ..
     return (max_tokens,)
 
 
-def _run_flashinfer_autotune_dummy_runs(runner: "GPUModelRunner") -> None:
+def _run_flashinfer_autotune_dummy_runs(
+    runner: "GPUModelRunner", skip_attn: bool = False
+) -> None:
     for num_tokens in _flashinfer_autotune_token_counts(runner):
         logger.info("Running FlashInfer autotune with %d tokens.", num_tokens)
-        runner._dummy_run(
+        dummy_kwargs = dict(
             num_tokens=num_tokens,
             skip_eplb=True,
             is_profile=True,
             randomize_inputs=True,
         )
+        # When autotuning runs before KV cache allocation (V2 runner only),
+        # attention metadata cannot be built yet because it needs a KV cache
+        # config. Skip attention: the FlashInfer tuner only profiles GEMM ops,
+        # and attention is warmed separately in kernel_warmup.
+        if skip_attn:
+            dummy_kwargs["skip_attn"] = True
+        runner._dummy_run(**dummy_kwargs)
 
 
-def flashinfer_autotune(runner: "GPUModelRunner") -> None:
+def flashinfer_autotune(
+    runner: "GPUModelRunner", skip_attn: bool = False
+) -> None:
     """
     Autotune FlashInfer operations.
     FlashInfer have many implementations for the same operation,
@@ -361,7 +372,7 @@ def flashinfer_autotune(runner: "GPUModelRunner") -> None:
             torch.inference_mode(),
             fi_utils.autotune(tune_mode=True, **autotune_kwargs),
         ):
-            _run_flashinfer_autotune_dummy_runs(runner)
+            _run_flashinfer_autotune_dummy_runs(runner, skip_attn=skip_attn)
             replayssm_autotune_warmup(runner)
             _autotune_kimi_k3_kda_qkvg(runner.get_model())
     finally:
