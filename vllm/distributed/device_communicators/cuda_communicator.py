@@ -54,6 +54,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             use_flashinfer_allreduce = False
             use_flashinfer_pcie_ipc_allreduce = False
             use_aiter_allreduce = False
+            use_fp8_host_staged_ar = False
         else:
             from vllm.distributed.parallel_state import _ENABLE_CUSTOM_ALL_REDUCE
 
@@ -70,12 +71,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
             use_aiter_allreduce = use_custom_allreduce and bool(
                 rocm_aiter_ops.is_custom_all_reduce_enabled()
             )
+            use_fp8_host_staged_ar = envs.VLLM_FP8_HOST_STAGED_AR
 
         self.use_custom_allreduce = use_custom_allreduce
         self.use_torch_symm_mem = use_torch_symm_mem
         self.use_flashinfer_allreduce = use_flashinfer_allreduce
         self.use_flashinfer_pcie_ipc_allreduce = use_flashinfer_pcie_ipc_allreduce
         self.use_aiter_allreduce = use_aiter_allreduce
+        self.use_fp8_host_staged_ar = use_fp8_host_staged_ar
 
         # lazy import to avoid documentation build error
         from vllm.distributed.device_communicators.custom_all_reduce import (
@@ -86,6 +89,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         )
         from vllm.distributed.device_communicators.flashinfer_pcie_ipc_all_reduce import (  # noqa: E501
             FlashInferPcieIpcAllReduce,
+        )
+        from vllm.distributed.device_communicators.fp8_host_staged_all_reduce import (
+            Fp8HostStagedAllReduce,
         )
         from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
         from vllm.distributed.device_communicators.quick_all_reduce import (
@@ -107,6 +113,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self.symm_mem_comm: SymmMemCommunicator | None = None
         self.fi_ar_comm: FlashInferAllReduce | None = None
         self.fi_pcie_ipc_ar_comm: FlashInferPcieIpcAllReduce | None = None
+        self.fp8_hs_ar: Fp8HostStagedAllReduce | None = None
         self.aiter_ar_comm: AiterCustomAllreduce | None = None
 
         if use_torch_symm_mem and current_platform.is_cuda():
@@ -130,6 +137,19 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 group=self.device_group,
                 tune_group=self.cpu_group,
                 device=self.device,
+            )
+
+        if (
+            self.use_fp8_host_staged_ar
+            and self.world_size == 2
+            and self.pynccl_comm is not None
+            and not self.pynccl_comm.disabled
+        ):
+            self.fp8_hs_ar = Fp8HostStagedAllReduce(
+                pynccl_comm=self.pynccl_comm,
+                rank=self.rank_in_group,
+                device=self.device,
+                cpu_group=self.cpu_group,
             )
 
         if self.use_aiter_allreduce and self.world_size > 1:
@@ -248,6 +268,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             "AITER_CUSTOM",
             "CUSTOM",
             "SYMM_MEM",
+            "FP8_HOST_STAGED",
             "PYNCCL",
         ]
         enabled_ar_backends: list[str] = []
@@ -290,6 +311,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
             enabled_ar_backends.append("CUSTOM")
         if self.symm_mem_comm is not None and not self.symm_mem_comm.disabled:
             enabled_ar_backends.append("SYMM_MEM")
+        if self.fp8_hs_ar is not None and not self.fp8_hs_ar.disabled:
+            enabled_ar_backends.append("FP8_HOST_STAGED")
         if self.pynccl_comm is not None and not self.pynccl_comm.disabled:
             enabled_ar_backends.append("PYNCCL")
 
@@ -360,6 +383,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
             out = symm_mem_comm.all_reduce(input_)
             assert out is not None
             return out
+        fp8_hs_ar = self.fp8_hs_ar
+        if fp8_hs_ar is not None and fp8_hs_ar.should_use(input_):
+            return fp8_hs_ar.all_reduce(input_)
         pynccl_comm = self.pynccl_comm
         if pynccl_comm is None or pynccl_comm.disabled:
             out = input_.clone()
