@@ -1454,6 +1454,7 @@ def multi_process_parallel(
     tp_size: int,
     pp_size: int,
     test_target: Any,
+    **kwargs: Any,
 ) -> None:
     import ray
 
@@ -1484,6 +1485,7 @@ def multi_process_parallel(
                     pp_size,
                     rank,
                     distributed_init_port,
+                    **kwargs,
                 ),
             )
         ray.get(refs)
