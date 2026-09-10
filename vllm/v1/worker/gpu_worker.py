@@ -56,10 +56,7 @@ from vllm.distributed.weight_transfer import (
 )
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.model_executor.warmup.kernel_warmup import (
-    flashinfer_autotune,
-    kernel_warmup,
-)
+from vllm.model_executor.warmup.kernel_warmup import kernel_warmup
 from vllm.multimodal.gpu_ipc_memory import reserve_mm_ipc_gpu_memory
 from vllm.platforms import current_platform
 from vllm.profiler.wrapper import (
@@ -72,7 +69,6 @@ from vllm.tasks import SupportedTask
 from vllm.tracing import instrument
 from vllm.utils.gc_utils import freeze_gc_heap, maybe_attach_gc_debug_callback
 from vllm.utils.gpu_sync_debug import enable_gpu_sync_check, with_gpu_sync_check
-from vllm.utils.flashinfer import has_flashinfer
 from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.mem_utils import (
     MemoryProfilingResult,
@@ -558,7 +554,6 @@ class Worker(WorkerBase):
                 "correspondingly."
             )
             logger.info(msg)
-            self._maybe_flashinfer_autotune_early()
             return reserve_mm_ipc_gpu_memory(
                 kv_cache_memory_bytes,
                 self.model_config.multimodal_config,
@@ -683,33 +678,11 @@ class Worker(WorkerBase):
                     suggested_util,
                 )
 
-        self._maybe_flashinfer_autotune_early()
         return reserve_mm_ipc_gpu_memory(
             int(self.available_kv_cache_memory_bytes),
             self.model_config.multimodal_config,
             getattr(self.parallel_config, "_api_process_count", 1),
         )
-
-    def _maybe_flashinfer_autotune_early(self) -> None:
-        """Run FlashInfer autotuning before KV cache allocation."""
-        if self.vllm_config.kernel_config.enable_flashinfer_autotune is False:
-            return
-        if not (has_flashinfer() and current_platform.has_device_capability(90)):
-            return
-
-        logger.info(
-            "Running FlashInfer autotuning early before KV cache allocation."
-        )
-        # The V2 runner cannot build attention metadata before KV cache
-        # allocation (it needs a KV cache config), so run the autotune dummy
-        # runs with attention skipped. The FlashInfer tuner profiles GEMM ops
-        # only; attention is warmed separately in kernel_warmup.
-        flashinfer_autotune(
-            self.model_runner, skip_attn=self.use_v2_model_runner
-        )
-        gc.collect()
-        torch.accelerator.empty_cache()
-        self._did_flashinfer_autotune_early = True
 
     def get_kv_connector_handshake_metadata(
         self,
