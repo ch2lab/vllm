@@ -29,6 +29,7 @@ from vllm.entrypoints.generate.base.serving import (
     build_spec_decoding_metrics,
     clamp_prompt_logprobs,
     format_token_id_placeholder,
+    resolve_client_address,
 )
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionLogProb,
@@ -283,6 +284,7 @@ class OpenAIServingChat(GenerateBaseServing):
         )
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
+        request_metadata.client = resolve_client_address(raw_request)
         if raw_request:
             raw_request.state.request_metadata = request_metadata
 
@@ -907,6 +909,7 @@ class OpenAIServingChat(GenerateBaseServing):
             data = self.create_streaming_error_response(e)
             yield f"data: {data}\n\n"
         # Send the final done message after all response.n are finished
+        self._record_request_summary(request_metadata, last_res)
         yield "data: [DONE]\n\n"
 
     async def chat_completion_full_generator(
@@ -1209,6 +1212,7 @@ class OpenAIServingChat(GenerateBaseServing):
                         delta=False,
                     )
 
+        self._record_request_summary(request_metadata, final_res)
         return response
 
     def _get_top_logprobs(

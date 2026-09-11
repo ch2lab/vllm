@@ -30,7 +30,10 @@ from vllm.entrypoints.generate.base.protocol import (
     DeltaMessage,
     RequestResponseMetadata,
 )
-from vllm.entrypoints.generate.base.serving import GenerateBaseServing
+from vllm.entrypoints.generate.base.serving import (
+    GenerateBaseServing,
+    resolve_client_address,
+)
 from vllm.entrypoints.mcp.tool_server import ToolServer
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.openai.responses.context import (
@@ -359,6 +362,7 @@ class OpenAIServingResponses(GenerateBaseServing):
         engine_inputs = [render_result.engine_input]
 
         request_metadata = RequestResponseMetadata(request_id=request.request_id)
+        request_metadata.client = resolve_client_address(raw_request)
         if raw_request:
             raw_request.state.request_metadata = request_metadata
 
@@ -876,6 +880,7 @@ class OpenAIServingResponses(GenerateBaseServing):
                 # If the response is already cancelled, don't update it.
                 if stored_response is None or stored_response.status != "cancelled":
                     self.response_store[response.id] = response
+        self._record_request_summary(request_metadata, context.final_output)
         return response
 
     def _topk_logprobs(

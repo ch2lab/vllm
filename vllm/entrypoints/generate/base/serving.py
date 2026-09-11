@@ -15,6 +15,7 @@ from vllm import RequestOutput
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.generate.base.protocol import (
     PerRequestMetrics,
+    RequestResponseMetadata,
     SpeculativeDecodingMetrics,
 )
 from vllm.entrypoints.generate.beam_search.online import BeamSearchOnlineMixin
@@ -119,6 +120,102 @@ def build_spec_decoding_metrics(
     return SpeculativeDecodingMetrics(**metrics.to_dict())
 
 
+def resolve_client_address(raw_request: Request | None) -> str:
+    """Best-effort client ``host[:port]`` for logging.
+
+    Prefers proxy-forwarded IP headers (proxied path, e.g. litellm/envoy
+    forwarding ``X-Forwarded-For``) and falls back to the direct TCP peer
+    (direct path). Never raises; returns ``"-"`` when undeterminable.
+    """
+    if raw_request is None:
+        return "-"
+
+    headers = raw_request.headers
+    forwarded = headers.get("X-Forwarded-For") or headers.get("X-Real-IP")
+    if forwarded:
+        ip = forwarded.split(",")[0].strip()
+        if not ip:
+            return "-"
+        port = headers.get("X-Forwarded-Port") or headers.get("X-Client-Port")
+        return f"{ip}:{port}" if port else ip
+
+    peer = raw_request.client
+    if peer is not None:
+        return f"{peer.host}:{peer.port}"
+    return "-"
+
+
+def build_request_summary(
+    final_res: RequestOutput | list[RequestOutput] | None,
+) -> str | None:
+    """Build the per-request metrics tail for the access-log line.
+
+    Format:
+    ``input {n} tokens(prefill {ms} ms, {rate} tok/s, cache hit: {pct}%),
+    output {n} tokens(decode {ms} ms, {rate} tok/s)``. The prefill rate
+    counts only the non-cached (computed) tokens; a value shows ``0`` when
+    the corresponding interval is unavailable.
+    """
+    if final_res is None:
+        return None
+    res_list = final_res if isinstance(final_res, list) else [final_res]
+    res_list = [r for r in res_list if r is not None]
+    if not res_list:
+        return None
+
+    num_prompt_tokens = 0
+    num_generation_tokens = 0
+    num_cached_tokens = 0
+    for r in res_list:
+        num_prompt_tokens += len(r.prompt_token_ids or [])
+        if r.encoder_prompt_token_ids is not None:
+            num_prompt_tokens += len(r.encoder_prompt_token_ids)
+        num_generation_tokens += sum(len(o.token_ids) for o in r.outputs)
+        num_cached_tokens += r.num_cached_tokens or 0
+
+    stats = res_list[0].metrics
+    prefill_s: float | None = None
+    decode_s: float | None = None
+    if stats is not None:
+        scheduled = stats.scheduled_ts
+        first = stats.first_token_ts
+        last = stats.last_token_ts
+        if scheduled > 0 and first > 0:
+            prefill_s = first - scheduled
+        if first > 0 and last > 0:
+            decode_s = last - first
+        # For streaming, per-chunk ``token_ids`` are deltas (the last chunk
+        # carries only the final token(s)), so the loop sum above undercounts
+        # the total. The engine's cumulative count (updated every step) is the
+        # authoritative total and is attached to every output.
+        if stats.num_generation_tokens:
+            num_generation_tokens = stats.num_generation_tokens
+
+    computed_tokens = max(0, num_prompt_tokens - num_cached_tokens)
+    prefill_rate = (
+        computed_tokens / prefill_s if prefill_s and prefill_s > 0 else 0.0
+    )
+    decode_rate = (
+        num_generation_tokens / decode_s if decode_s and decode_s > 0 else 0.0
+    )
+    cache_hit_pct = (
+        num_cached_tokens / num_prompt_tokens * 100.0
+        if num_prompt_tokens > 0
+        else 0.0
+    )
+
+    prefill_ms = prefill_s * 1000.0 if prefill_s is not None else 0.0
+    decode_ms = decode_s * 1000.0 if decode_s is not None else 0.0
+
+    return (
+        f"input {num_prompt_tokens} tokens"
+        f"(prefill {prefill_ms:.1f} ms, {prefill_rate:.1f} tok/s, "
+        f"cache hit: {cache_hit_pct:.0f}%), "
+        f"output {num_generation_tokens} tokens"
+        f"(decode {decode_ms:.1f} ms, {decode_rate:.1f} tok/s)"
+    )
+
+
 @dataclass(kw_only=True)
 class ServeContext(Generic[RequestT]):
     request: RequestT
@@ -170,6 +267,23 @@ class GenerateBaseServing(BaseServing, BeamSearchOnlineMixin):
         except Exception:
             # Never fail server startup over the fingerprint.
             self.system_fingerprint = None
+
+    def _record_request_summary(
+        self,
+        request_metadata: RequestResponseMetadata,
+        final_res: RequestOutput | list[RequestOutput] | None,
+    ) -> None:
+        """Stash per-request metrics for the access-log line.
+
+        Runs only when ``--enable-log-requests`` is set; the
+        ``RequestAccessLogMiddleware`` emits the merged line once the
+        response completes.
+        """
+        if self.request_logger is None or final_res is None:
+            return
+        summary = build_request_summary(final_res)
+        if summary is not None:
+            request_metadata.summary = summary
 
     def _preflight(self, n: int = 1) -> None:
         """Engine checks that must run before a response is started.
