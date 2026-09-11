@@ -86,6 +86,10 @@ class PerRequestMetrics(OpenAIBaseModel):
 
 class RequestResponseMetadata(BaseModel):
     request_id: str
+    # Resolved source address (host[:port]) for logging; set at request intake.
+    client: str | None = None
+    # Per-request metrics tail stashed by the serving layer for the access log.
+    summary: str | None = None
     final_usage_info: UsageInfo | None = None
 
 

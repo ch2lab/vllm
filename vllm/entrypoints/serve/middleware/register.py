@@ -73,3 +73,11 @@ def init_entrypoints_middleware(
             raise ValueError(
                 f"Invalid middleware {middleware}. Must be a function or a class."
             )
+
+    # Replaces uvicorn's built-in access log with a single per-request line
+    # that also carries per-request metrics (see RequestAccessLogMiddleware).
+    # Added last so it is the outermost middleware and sees every response.
+    if args.disable_uvicorn_access_log:
+        from .request_access_log import RequestAccessLogMiddleware
+
+        app.add_middleware(RequestAccessLogMiddleware)

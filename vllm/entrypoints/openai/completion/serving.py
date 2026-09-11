@@ -20,6 +20,7 @@ from vllm.entrypoints.generate.base.serving import (
     build_spec_decoding_metrics,
     clamp_prompt_logprobs,
     format_token_id_placeholder,
+    resolve_client_address,
 )
 from vllm.entrypoints.openai.completion.protocol import (
     CompletionLogProbs,
@@ -144,6 +145,7 @@ class OpenAIServingCompletion(GenerateBaseServing):
         created_time = int(time.time())
 
         request_metadata = RequestResponseMetadata(request_id=request_id)
+        request_metadata.client = resolve_client_address(raw_request)
         if raw_request:
             raw_request.state.request_metadata = request_metadata
 
@@ -276,6 +278,7 @@ class OpenAIServingCompletion(GenerateBaseServing):
 
             return fake_stream_generator()
 
+        self._record_request_summary(request_metadata, final_res_batch)
         return response
 
     async def completion_stream_generator(
@@ -498,6 +501,7 @@ class OpenAIServingCompletion(GenerateBaseServing):
             logger.exception("Error in completion stream generator.")
             data = self.create_streaming_error_response(e)
             yield f"data: {data}\n\n"
+        self._record_request_summary(request_metadata, last_res)
         yield "data: [DONE]\n\n"
 
     def request_output_to_completion_response(
