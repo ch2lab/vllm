@@ -156,6 +156,28 @@ def to_scale_bytes(scale_vals: np.ndarray) -> np.ndarray:
     return b.view(torch.uint8).t().contiguous().cpu().numpy()
 
 
+# ---------------------------------------------------------------------------
+# Natural (row-major) packing -- the layout the checkpoint stores for output
+# dims that are NOT a multiple of 64 (the Marlin packed-macro overflows there).
+# ---------------------------------------------------------------------------
+def pack_simple(code_mat: np.ndarray, k: int, n: int) -> torch.Tensor:
+    """Pack a (K, N) matrix of 4-bit codes into the natural row-major layout.
+
+    Row n holds the K 4-bit codes for output column n, 2 codes/byte (low
+    nibble = even k, high nibble = odd k). Returns a uint8 tensor of shape
+    (N, K//2) -- exactly what ``dequant_nvfp4_to_fp16`` reads back.
+    """
+    cm = code_mat.T.astype(np.uint8)  # (N, K)
+    lo = cm[:, 0::2] & 0x0F           # even k -> low nibble
+    hi = cm[:, 1::2] & 0x0F           # odd  k -> high nibble
+    return torch.from_numpy((hi << 4 | lo).astype(np.uint8)).contiguous()
+
+
+def scale_direct(scale_vals: np.ndarray) -> torch.Tensor:
+    """scale_vals (N, K//16) float -> (N, K//16) fp8_e4m3fn, direct (row n)."""
+    return torch.from_numpy(scale_vals.astype(np.float32)).to(torch.float8_e4m3fn)
+
+
 def build(m: int, n: int, k: int, gs: float):
     """Build synthetic inputs: FP16 acts, packed codes, fp8 scales, gs, output."""
     a = (torch.randn(m, k, dtype=torch.float32, device=DEVICE) * ACT_SCALE).half()
@@ -210,6 +232,51 @@ def run_shape(m, n, k, gs, verbose=True):
     return ok, frob, mag_ratio
 
 
+def run_fallback_shape(m, n, k, gs, verbose=True):
+    """Validate the FP16 dequant fallback path (n % 64 != 0).
+
+    Builds the natural (simple) checkpoint packing (row-major codes + direct
+    fp8 scales), dequants it to a dense FP16 weight via
+    ``dequant_nvfp4_to_fp16``, runs a plain FP16 GEMM with the global-scale
+    epilogue (the exact code path in ``Sm70MarlinNvFp4LinearKernel.apply_weights``
+    for non-64-multiple output dims), and compares to the independent FP32
+    ``true_reference`` (which is packing-agnostic).
+    """
+    import torch.nn.functional as F
+    from vllm.model_executor.kernels.linear.nvfp4.sm70 import (
+        dequant_nvfp4_to_fp16,
+    )
+
+    a = (torch.randn(m, k, dtype=torch.float32, device=DEVICE) * ACT_SCALE).half()
+    code_mat = np.random.randint(0, 16, size=(k, n)).astype(np.int64)
+    g = k // 16
+    scale_vals = SCALE_POOL[np.random.randint(0, len(SCALE_POOL), size=(n, g))]
+    qw = pack_simple(code_mat, k, n).to(DEVICE)
+    scales = scale_direct(scale_vals).to(DEVICE)
+
+    # Mirror Sm70MarlinNvFp4LinearKernel.apply_weights fallback branch exactly.
+    W_fp16 = dequant_nvfp4_to_fp16(qw, scales, k, n)
+    a_fp16 = a.reshape(-1, k).to(torch.float16)
+    out = F.linear(a_fp16, W_fp16).to(torch.float32)
+    out = out * torch.tensor(gs, dtype=torch.float32, device=DEVICE)
+    torch.cuda.synchronize()
+    out_f = out.cpu().numpy().astype(np.float32)
+    ref = true_reference(a, code_mat, scale_vals, gs)
+
+    d = out_f - ref
+    frob = float(np.linalg.norm(d) / max(np.linalg.norm(ref), 1e-30))
+    ok = frob < RTOL
+    max_abs = float(np.abs(d).max())
+    mag_ratio = float(np.linalg.norm(out_f) / max(np.linalg.norm(ref), 1e-30))
+
+    if verbose:
+        tag = "PASS" if ok else "FAIL"
+        print(f"[{tag}] fallback M={m:<4d} N={n:<6d} K={k:<6d} | "
+              f"frob_rel={frob:.3e} max_abs={max_abs:.3e} ok={ok}")
+        print(f"        | ||out||/||true_ref||={mag_ratio:.4e} (expect ~1.0)")
+    return ok, frob, mag_ratio
+
+
 def probe_real_dims(verbose=True):
     """Probe the real-model dims K=N=11008 (Qwen3.5): accepted + true magnitude."""
     results = {}
@@ -248,9 +315,13 @@ def main():
           f"natural gs={GS:g})")
     print("=" * 78)
     n_pass = 0
+    n_total = 0
     frobs = []
     mag_ratios = []
+
+    # --- Marlin fast path (n % 64 == 0), the big layers ---
     for (m, n, k) in shapes:
+        n_total += 1
         try:
             ok, frob, mag_ratio = run_shape(m, n, k, GS)
             n_pass += int(ok)
@@ -259,8 +330,32 @@ def main():
         except Exception as exc:
             print(f"[ERROR] M={m} N={n} K={k}: {str(exc)[:200]}")
 
+    # --- Marlin control at the smallest 64-multiple n (confirms small-n kernel) ---
+    for (m, n, k) in [(mm, 128, kk) for mm in (1, 16) for kk in (4096, 8192)]:
+        n_total += 1
+        try:
+            ok, frob, mag_ratio = run_shape(m, n, k, GS)
+            n_pass += int(ok)
+            frobs.append(frob)
+            mag_ratios.append(mag_ratio)
+        except Exception as exc:
+            print(f"[ERROR] M={m} N={n} K={k}: {str(exc)[:200]}")
+
+    # --- FP16 dequant fallback (n % 64 != 0): the fix for n=96 ---
     print("-" * 78)
-    print(f"True-magnitude: {n_pass}/{len(shapes)} shapes PASS "
+    print("Fallback path (n % 64 != 0 -> FP16 dequant GEMM):")
+    for (m, n, k) in [(mm, 96, kk) for mm in (1, 16) for kk in (512, 5120)]:
+        n_total += 1
+        try:
+            ok, frob, mag_ratio = run_fallback_shape(m, n, k, GS)
+            n_pass += int(ok)
+            frobs.append(frob)
+            mag_ratios.append(mag_ratio)
+        except Exception as exc:
+            print(f"[ERROR] fallback M={m} N={n} K={k}: {str(exc)[:200]}")
+
+    print("-" * 78)
+    print(f"Total: {n_pass}/{n_total} shapes PASS "
           f"(Frobenius rel err < {RTOL})")
     if frobs:
         print(f"worst Frobenius rel err: {max(frobs):.4e} "
@@ -273,8 +368,9 @@ def main():
     print("Real-model dim probe (Qwen3.5, natural gs):")
     probe_real_dims()
 
-    # Exit 0 iff every shape matched the true reference within tolerance.
-    sys.exit(0 if n_pass == len(shapes) else 1)
+    # Exit 0 iff every shape (Marlin + n=128 control + n=96 fallback) matched
+    # the true reference within tolerance.
+    sys.exit(0 if n_pass == n_total else 1)
 
 
 if __name__ == "__main__":

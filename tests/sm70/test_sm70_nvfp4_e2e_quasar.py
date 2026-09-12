@@ -48,6 +48,10 @@ MAX_TOKENS = int(os.environ.get("SM70_NVFP4_MAX_TOKENS", "96"))
 TP = int(os.environ.get("SM70_NVFP4_TP", "1"))
 MAX_MODEL_LEN = int(os.environ.get("SM70_NVFP4_MAX_MODEL_LEN", "4096"))
 GPU_MEM_UTIL = float(os.environ.get("SM70_NVFP4_GPU_MEM_UTIL", "0.90"))
+# SM70 (V100) full-attention prefill is f16-WMMA-only (no bf16 tensor-core mma);
+# 1Cat's production SM70 route is likewise fp16. Default to fp16 so the full-
+# attention path is usable on V100; override with SM70_NVFP4_DTYPE.
+DTYPE = os.environ.get("SM70_NVFP4_DTYPE", "float16")
 # Eager keeps this a focused correctness smoke test (no CUDA-graph capture
 # variable). The NVFP4 GEMM / attention kernels run the same code either way.
 ENFORCE_EAGER = os.environ.get("SM70_NVFP4_EAGER", "1") == "1"
@@ -112,7 +116,7 @@ def main() -> int:
         tensor_parallel_size=TP,
         gpu_memory_utilization=GPU_MEM_UTIL,
         max_model_len=MAX_MODEL_LEN,
-        dtype="bfloat16",
+        dtype=DTYPE,
         enforce_eager=ENFORCE_EAGER,
         seed=0,
     )
