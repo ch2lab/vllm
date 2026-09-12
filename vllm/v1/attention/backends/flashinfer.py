@@ -109,6 +109,20 @@ def sm70_nvfp4_kv_enabled() -> bool:
     )
 
 
+def sm70_flashinfer_attn_enabled() -> bool:
+    """Whether the opt-in SM70 (family 70) native FlashInfer paged attention is
+    active.
+
+    Gated on VLLM_SM70_FLASHINFER_ATTN so that, unless explicitly enabled, backend
+    selection is byte-identical to upstream (the FlashInfer floor stays SM80+).
+    On SM70 the 16-bit paged decode+prefill path (f16 prefill, f16/bf16 decode) is
+    used; QUASAR-style bf16 models run as fp16 (see the V100 attention notes).
+    """
+    return envs.VLLM_SM70_FLASHINFER_ATTN and current_platform.is_device_capability_family(
+        70
+    )
+
+
 def _nvfp4_kv_backend(is_nvfp4: bool) -> str:
     """FlashInfer backend for the NVFP4 KV-cache attention path.
 
@@ -546,6 +560,11 @@ class FlashInferBackend(AttentionBackend):
 
     @classmethod
     def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
+        # SM70 (Volta V100): the native 16-bit paged attention (f16 prefill,
+        # f16/bf16 decode) is available and env-gated. Allow selection when
+        # explicitly enabled; otherwise keep the SM80 floor (upstream behavior).
+        if capability == DeviceCapability(7, 0) and sm70_flashinfer_attn_enabled():
+            return True
         # FlashInfer supports SM75+, but is currently broken on SM75 (Turing):
         # https://github.com/flashinfer-ai/flashinfer/issues/3620 (fix:
         # https://github.com/flashinfer-ai/flashinfer/pull/3621). Temporarily

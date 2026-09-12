@@ -194,6 +194,7 @@ if TYPE_CHECKING:
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
     VLLM_SM70_NVFP4: bool = False
     VLLM_SM70_NVFP4_KV: bool = False
+    VLLM_SM70_FLASHINFER_ATTN: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
@@ -1563,6 +1564,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # default so the backend is byte-identical to upstream unless explicitly on.
     "VLLM_SM70_NVFP4_KV": lambda: bool(
         int(os.getenv("VLLM_SM70_NVFP4_KV", "0"))
+    ),
+    # SM70 (Volta V100) native FlashInfer paged attention (16-bit decode+prefill).
+    # When enabled on an SM70 (family 70) device, the FlashInfer backend becomes
+    # selectable (its supports_compute_capability floor is normally SM80+). Off by
+    # default so backend selection is byte-identical to upstream unless explicitly
+    # turned on.
+    "VLLM_SM70_FLASHINFER_ATTN": lambda: bool(
+        int(os.getenv("VLLM_SM70_FLASHINFER_ATTN", "0"))
     ),
     # Whether to turn on the outlines cache for V1
     # This cache is unbounded and on disk, so it's not safe to use in
