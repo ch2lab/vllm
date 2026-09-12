@@ -214,6 +214,7 @@ if TYPE_CHECKING:
     VLLM_KIMI_K3_GEMM_RS: bool = False
     VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER: bool = True
     VLLM_USE_FLASHINFER_MOE_INT4: bool = False
+    VLLM_USE_NVFP4_D256_PREFILL: bool = False
     VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR: str | None = None
     VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS: list[str] | None = None
     VLLM_FLASHINFER_ALLREDUCE_BACKEND: Literal["auto", "trtllm", "mnnvl"] = "auto"
@@ -1625,6 +1626,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Allow use of FlashInfer MxInt4 MoE kernels for fused moe ops.
     "VLLM_USE_FLASHINFER_MOE_INT4": lambda: bool(
         int(os.getenv("VLLM_USE_FLASHINFER_MOE_INT4", "0"))
+    ),
+    # Route NVFP4-KV D256 prefill to the QK MXFP8 / PV NVFP4 kernel instead of
+    # the FA2-dequant path. Off by default (perf path not yet production
+    # validated); the original FA2 path remains the default.
+    "VLLM_USE_NVFP4_D256_PREFILL": lambda: bool(
+        int(os.getenv("VLLM_USE_NVFP4_D256_PREFILL", "0"))
     ),
     # Control the cache sized used by the xgrammar compiler. The default
     # of 512 MB should be enough for roughly 1000 JSON schemas.

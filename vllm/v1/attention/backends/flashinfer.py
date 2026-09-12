@@ -580,6 +580,12 @@ class FIPrefill:
     """Metadata for the native FlashInfer prefill pathway (non-TRTLLM)."""
 
     wrapper: BatchPrefillWithPagedKVCacheWrapper | BatchDCPPrefillWrapper
+    block_tables: torch.Tensor
+    """Prefill-only block table slice. [num_prefills, max_num_blocks_per_seq]."""
+    seq_lens: torch.Tensor
+    """Prefill-only KV sequence lengths. [num_prefills]."""
+    cum_seq_lens_q: torch.Tensor
+    """Shifted qo_indptr over prefill requests (GPU). [num_prefills + 1]."""
 
 
 @dataclass
@@ -598,6 +604,78 @@ class FlashInferDecodeKernel(Enum):
 
 def _is_xqa_head_dim_supported(head_dim: int) -> bool:
     return 16 <= head_dim <= 256 and head_dim % 16 == 0
+
+
+def _nvfp4_d256_prefill(
+    impl,
+    prefill_query: torch.Tensor,
+    kv_cache: torch.Tensor,
+    pre: FIPrefill,
+    q_scales: tuple[float, float, float],
+    out_prefill: torch.Tensor,
+    causal: bool = True,
+) -> None:
+    """Run the QK MXFP8 / PV NVFP4 kernel for NVFP4-KV D256 prefill requests.
+
+    One kernel call per prefill request: gather that request's paged NVFP4
+    blocks into dense per-side views, convert to the kernel's MXFP8/NVFP4
+    input formats, and dispatch the dense kernel. ``kv_cache`` is the raw
+    (num_blocks, 2*N_kv, block_size, F) layer cache; K heads occupy the first
+    N_kv head slots, V the next N_kv (page = [K_data|K_scale|V_data|V_scale]).
+    Within each side the page bytes are one head-major data region
+    (H_kv·N·(F·8//9)) followed by one head-major scale region
+    (H_kv·N·(F- F·8//9)), as ``nvfp4_split_data_scale`` reads back for the
+    FA2 path; the row-interleaved [data | scale] rows are only the kernel's
+    input form, re-assembled here.
+    """
+    from flashinfer.qk_mxfp8_pv_nvfp4_attention_sm120 import (
+        nvfp4_prefill_convert,
+        qk_mxfp8_pv_nvfp4_attention_sm120_fwd,
+    )
+
+    q_scale, k_scale, v_scale = q_scales
+    Hk = impl.num_kv_heads
+    F = nvfp4_kv_cache_full_dim(impl.head_size)
+    F_data = F * 8 // 9
+    F_sf = F - F_data
+    page_size = kv_cache.shape[2]
+    qo = pre.cum_seq_lens_q
+    for i in range(pre.block_tables.shape[0]):
+        q0 = int(qo[i].item())
+        q1 = int(qo[i + 1].item())
+        kv_len = int(pre.seq_lens[i].item())
+        nblocks = (kv_len + page_size - 1) // page_size
+        gathered = kv_cache.index_select(0, pre.block_tables[i, :nblocks])
+        # Split each side of the gathered pages into its physical data and
+        # scale regions (head-major, token-minor views of the 4-D side).
+        k_data, k_sf = nvfp4_split_data_scale(gathered[:, :Hk])
+        v_data, v_sf = nvfp4_split_data_scale(gathered[:, Hk:])
+        # Repack into the kernel's row-interleaved (Hk, S, F) rows
+        # [data(h,s) | sf(h,s)], token order block-major, sliced to kv_len.
+        k_side = torch.cat([
+            k_data.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_data),
+            k_sf.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_sf)
+            .view(torch.uint8),
+        ], dim=-1)[:, :kv_len].contiguous()
+        v_side = torch.cat([
+            v_data.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_data),
+            v_sf.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_sf)
+            .view(torch.uint8),
+        ], dim=-1)[:, :kv_len].contiguous()
+        q_bf16 = prefill_query[q0:q1].unsqueeze(0).transpose(1, 2)
+        q_bf16 = q_bf16.contiguous()  # (1, Hq, M, D), convert needs C-order
+        (q_fp8, k_fp8, v_fp4_t,
+         q_sf, k_sf, v_sf_t) = nvfp4_prefill_convert(
+            k_side, v_side, q_bf16, k_scale, v_scale, q_scale)
+        q_len = q1 - q0
+        out_req = qk_mxfp8_pv_nvfp4_attention_sm120_fwd(
+            q_fp8, k_fp8, v_fp4_t, q_sf, k_sf, v_sf_t,
+            sm_scale=impl.scale, causal=causal,
+            unpadded_q_len=q_len, unpadded_k_len=kv_len,
+            out_dtype=torch.bfloat16,
+        )
+        # fwd returns the 128-padded q extent; slice back to this request.
+        out_prefill[q0:q1] = out_req[0, :, :q_len].transpose(0, 1)
 
 
 @dataclass
@@ -1745,7 +1823,15 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                         fixed_split_size=self.prefill_fixed_split_size,
                         disable_split_kv=self.disable_split_kv,
                     )
-                attn_metadata.prefill = FIPrefill(wrapper=prefill_wrapper)
+                qo_indptr_prefill_gpu = (
+                    qo_indptr[prefill_start:] - qo_indptr[prefill_start]
+                )
+                attn_metadata.prefill = FIPrefill(
+                    wrapper=prefill_wrapper,
+                    block_tables=block_table_tensor[prefill_start:],
+                    seq_lens=seq_lens[prefill_start:],
+                    cum_seq_lens_q=qo_indptr_prefill_gpu,
+                )
 
         ## DECODE PATHWAY
         if num_decodes > 0:
@@ -2315,6 +2401,24 @@ class FlashInferImpl(AttentionImpl):
                             self.scale * layer._q_scale_float * layer._k_scale_float,
                             v_scale=layer._v_scale_float,
                             out=out_prefill,
+                        )
+                    elif (
+                        self.is_kvcache_nvfp4
+                        and self.head_size == 256
+                        and self.window_left == -1
+                        and not use_dcp
+                        and prefill_query.dtype == torch.bfloat16
+                        and envs.VLLM_USE_NVFP4_D256_PREFILL
+                    ):
+                        _nvfp4_d256_prefill(
+                            self,
+                            prefill_query,
+                            kv_cache,
+                            attn_metadata.prefill,
+                            (layer._q_scale_float, layer._k_scale_float,
+                             layer._v_scale_float),
+                            out_prefill,
+                            causal=attn_metadata.causal,
                         )
                     else:
                         prefill_wrapper.run(
