@@ -3088,8 +3088,7 @@ class Scheduler(SchedulerInterface):
             is_affected = False
             marked_invalid_block = False
             req_id = request.request_id
-            # TODO (davidb): add support for hybrid memory allocator
-            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
+            req_block_ids_per_group = self.kv_cache_manager.get_block_ids(req_id)
             # We iterate only over blocks that may contain externally computed
             # tokens
             req_num_computed_tokens = (
@@ -3099,22 +3098,30 @@ class Scheduler(SchedulerInterface):
             req_num_computed_blocks = (
                 req_num_computed_tokens + self.block_size - 1
             ) // self.block_size
-            for idx, block_id in zip(range(req_num_computed_blocks), req_block_ids):
-                if block_id not in invalid_block_ids:
+            for idx in range(req_num_computed_blocks):
+                # Collect invalid blocks at this position across all KV cache
+                # groups.
+                invalid_at_idx = set()
+                for group_block_ids in req_block_ids_per_group:
+                    if idx < len(group_block_ids):
+                        block_id = group_block_ids[idx]
+                        if block_id in invalid_block_ids:
+                            invalid_at_idx.add(block_id)
+
+                if not invalid_at_idx:
                     continue
 
                 is_affected = True
 
-                if block_id in marked_invalid_block_ids:
-                    # This invalid block is shared with a previous request
-                    # and was already marked for recomputation.
-                    # This means this request can still consider this block
-                    # as computed when rescheduled.
-                    # Currently this only applies to sync loading; Async
-                    # loading does not yet support block sharing
+                unmarked = invalid_at_idx - marked_invalid_block_ids
+                if not unmarked:
+                    # All invalid blocks at this position are shared with a
+                    # previous request and were already marked for
+                    # recomputation. This request can still consider them as
+                    # computed when rescheduled.
                     continue
 
-                marked_invalid_block_ids.add(block_id)
+                marked_invalid_block_ids.update(unmarked)
 
                 if marked_invalid_block:
                     # This request has already marked an invalid block for
@@ -3131,7 +3138,9 @@ class Scheduler(SchedulerInterface):
 
                 # collect invalid block and all downstream dependent blocks
                 if evict_blocks:
-                    blocks_to_evict.update(req_block_ids[idx:])
+                    for group_block_ids in req_block_ids_per_group:
+                        if len(group_block_ids) > idx:
+                            blocks_to_evict.update(group_block_ids[idx:])
 
             if is_affected:
                 if not marked_invalid_block:
