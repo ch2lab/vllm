@@ -740,6 +740,22 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
                      " in CUDA target architectures")
     endif()
 
+  # SM70 (V100) Marlin NVFP4 GEMM — self-contained SM70-only subsystem.
+  # The standard Marlin block above is skipped on SM70 (MARLIN_OTHER_ARCHS is
+  # empty there), so this file is added independently and scoped to SM70.
+  cuda_archs_loose_intersection(SM70_NVFP4_ARCHS "7.0" "${CUDA_ARCHS}")
+  if(SM70_NVFP4_ARCHS)
+    set(SM70_NVFP4_SRCS
+       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_gemm.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${SM70_NVFP4_SRCS}"
+      CUDA_ARCHS "${SM70_NVFP4_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SM70_NVFP4_SRCS}")
+    message(STATUS "Building SM70 Marlin NVFP4 GEMM for archs: ${SM70_NVFP4_ARCHS}")
+  else()
+    message(STATUS "Not building SM70 Marlin NVFP4 GEMM (no SM70 arch in targets).")
+  endif()
+
   # DeepSeek V3 fused A GEMM kernel (requires SM 9.0+, Hopper and later)
   if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
     cuda_archs_loose_intersection(DSV3_FUSED_A_GEMM_ARCHS "9.0a;10.0f;10.7f;11.0f;12.0f" "${CUDA_ARCHS}")
