@@ -97,6 +97,40 @@ FLASHINFER_PREFILL_WORKSPACE_BYTES_PER_ELEM = 16
 FP8_DTYPE = current_platform.fp8_dtype()
 FP4_DTYPE = torch.uint8
 
+
+def sm70_nvfp4_kv_enabled() -> bool:
+    """Whether the opt-in SM70 (family 70) NVFP4 KV-cache store path is active.
+
+    Gated on VLLM_SM70_NVFP4_KV so that, unless explicitly enabled, this
+    backend is byte-identical to upstream (NVFP4 KV only on SM100 trtllm-gen).
+    """
+    return envs.VLLM_SM70_NVFP4_KV and current_platform.is_device_capability_family(
+        70
+    )
+
+
+def _nvfp4_kv_backend(is_nvfp4: bool) -> str:
+    """FlashInfer backend for the NVFP4 KV-cache attention path.
+
+    SM100 reads NVFP4 KV via trtllm-gen; SM70 (opt-in, VLLM_SM70_NVFP4_KV)
+    reads it via the native/FA2 paged path, so use "auto".  Non-NVFP4 KV
+    always uses "auto".
+    """
+    if is_nvfp4:
+        return "auto" if sm70_nvfp4_kv_enabled() else "trtllm-gen"
+    return "auto"
+
+
+def _nvfp4_o_dtype(is_nvfp4: bool, model_dtype: torch.dtype) -> torch.dtype:
+    """Output dtype for the FlashInfer attention path.
+
+    SM100 trtllm-gen NVFP4 outputs FP8; SM70 (opt-in) NVFP4 outputs BF16/FP16
+    (model dtype).  Non-NVFP4 always uses the model dtype.
+    """
+    if is_nvfp4:
+        return model_dtype if sm70_nvfp4_kv_enabled() else FP8_DTYPE
+    return model_dtype
+
 logger = init_logger(__name__)
 
 trtllm_workspace_buffer = None
@@ -494,6 +528,10 @@ class FlashInferBackend(AttentionBackend):
     @classmethod
     def supports_kv_cache_dtype(cls, kv_cache_dtype: CacheDType | None) -> bool:
         if kv_cache_dtype is not None and kv_cache_dtype.startswith("nvfp4"):
+            if sm70_nvfp4_kv_enabled():
+                # SM70 (family 70) NVFP4 KV-cache: store path + native paged
+                # attention read (see VLLM_SM70_NVFP4_KV).
+                return True
             return (
                 current_platform.is_device_capability_family(100)
                 and supports_trtllm_attention(is_prefill=True)
@@ -777,7 +815,12 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             # storage dtype may not be the same as the op dtype (uint8 vs fp8_e4m3)
             self.is_kvcache_nvfp4 = self.cache_dtype.startswith("nvfp4")
             if self.is_kvcache_nvfp4:
-                if (
+                if sm70_nvfp4_kv_enabled():
+                    # SM70 NVFP4 KV-cache: store path + native paged attention
+                    # read. Query/output stay BF16/FP16 (no FP8); the packed KV
+                    # is uint8 (flashinfer maps "nvfp4" -> uint8).
+                    self.kv_cache_dtype = "nvfp4"
+                elif (
                     force_use_trtllm_attention() is False
                     or not supports_trtllm_attention(is_prefill=True)
                     or not supports_trtllm_attention(is_prefill=False)
@@ -787,9 +830,10 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                         "SM100 trtllm-gen "
                         "FlashInfer path."
                     )
-                # The scale search only affects the store kernel. FlashInfer
-                # reads both variants using the same NVFP4 layout.
-                self.kv_cache_dtype = "nvfp4"
+                else:
+                    # The scale search only affects the store kernel. FlashInfer
+                    # reads both variants using the same NVFP4 layout.
+                    self.kv_cache_dtype = "nvfp4"
             else:
                 self.kv_cache_dtype = FlashInferBackend.get_dtype_for_flashinfer(
                     self.cache_dtype
@@ -969,6 +1013,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 return FlashInferBackend.get_dtype_for_flashinfer(cache_dtype)
             return self.model_config.dtype
         if cache_dtype.startswith("nvfp4"):
+            if sm70_nvfp4_kv_enabled():
+                # SM70 attention reads NVFP4 KV with BF16/FP16 queries.
+                return self.model_config.dtype
             return FlashInferBackend.get_dtype_for_flashinfer("fp8_e4m3")
         return self.kv_cache_spec.dtype
 
@@ -1185,9 +1232,10 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                         window_left=self.window_left,
                     )
                 else:
-                    # NVFP4 KV cache requires the trtllm-gen backend inside
-                    # the wrapper; fa2/fa3 do not support nvfp4.
-                    backend = "trtllm-gen" if self.is_kvcache_nvfp4 else "auto"
+                    # NVFP4 KV cache: SM100 uses trtllm-gen; SM70 (opt-in)
+                    # reads it via the native paged path.  fa2/fa3 do not
+                    # support nvfp4.
+                    backend = _nvfp4_kv_backend(self.is_kvcache_nvfp4)
                     self._prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
                         self._get_workspace_buffer(),
                         get_flashinfer_layout_string(self.kv_cache_layout),
@@ -1211,9 +1259,9 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 paged_kv_indptr = None
                 paged_kv_indices = None
                 paged_kv_last_page_len = None
-            # NVFP4 KV cache requires the trtllm-gen backend inside
-            # the wrapper; fa2/fa3 do not support nvfp4.
-            backend = "trtllm-gen" if self.is_kvcache_nvfp4 else "auto"
+            # NVFP4 KV cache: SM100 uses trtllm-gen; SM70 (opt-in) reads it
+            # via the native paged path.  fa2/fa3 do not support nvfp4.
+            backend = _nvfp4_kv_backend(self.is_kvcache_nvfp4)
             decode_wrapper = BatchDecodeWithPagedKVCacheWrapper(
                 self._get_workspace_buffer(),
                 get_flashinfer_layout_string(self.kv_cache_layout),
@@ -1646,8 +1694,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     # NVFP4 trtllm kernel only supports FP8 output;
                     # use FP8 o_data_type so the wrapper matches the
                     # FP8 output buffer allocated in forward().
-                    o_dtype = (
-                        FP8_DTYPE if self.is_kvcache_nvfp4 else self.model_config.dtype
+                    o_dtype = _nvfp4_o_dtype(
+                        self.is_kvcache_nvfp4, self.model_config.dtype
                     )
                     prefill_wrapper.plan(
                         qo_indptr=qo_indptr_prefill_cpu,
@@ -1735,8 +1783,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 # NVFP4 trtllm kernel only supports FP8 output;
                 # use FP8 o_data_type so the wrapper matches the
                 # FP8 output buffer allocated in forward().
-                o_dtype = (
-                    FP8_DTYPE if self.is_kvcache_nvfp4 else self.model_config.dtype
+                o_dtype = _nvfp4_o_dtype(
+                    self.is_kvcache_nvfp4, self.model_config.dtype
                 )
                 paged_kv_indptr_cpu = self.paged_kv_indptr.cpu[: num_input_tokens + 1]
                 paged_kv_last_page_len_cpu = self.paged_kv_last_page_len.cpu[

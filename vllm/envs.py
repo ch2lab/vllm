@@ -193,6 +193,7 @@ if TYPE_CHECKING:
     VLLM_B12X_MOE_FP4_FORCE_A16: bool = False
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
     VLLM_SM70_NVFP4: bool = False
+    VLLM_SM70_NVFP4_KV: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
@@ -1556,6 +1557,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # SM70 (Volta V100) Marlin NVFP4 GEMM binding. Gates the SM70-only
     # NVFP4 GEMM op (see vllm.sm70_nvfp4_ops); only effective on exact SM70.
     "VLLM_SM70_NVFP4": lambda: bool(int(os.getenv("VLLM_SM70_NVFP4", "0"))),
+    # SM70 (Volta V100) NVFP4 KV-cache store path. Gated: when enabled on an
+    # SM70 (family 70) device, the FlashInfer backend enables the NVFP4 KV-cache
+    # store/selection path (BF16/FP16 query+output, uint8 packed KV).  Off by
+    # default so the backend is byte-identical to upstream unless explicitly on.
+    "VLLM_SM70_NVFP4_KV": lambda: bool(
+        int(os.getenv("VLLM_SM70_NVFP4_KV", "0"))
+    ),
     # Whether to turn on the outlines cache for V1
     # This cache is unbounded and on disk, so it's not safe to use in
     # an environment with potentially malicious users.
