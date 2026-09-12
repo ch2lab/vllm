@@ -53,15 +53,20 @@ def gemm(a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size):
     """SM70 NVFP4 GEMM: ``c = a @ b_q_weight^T`` (dequantized in-kernel).
 
     Thin wrapper around ``torch.ops._C.sm70_nvfp4_marlin_gemm``. The kernel
-    applies ``global_scale`` internally as the epilogue alpha, so it is passed
-    through unchanged. ``group_size`` is 16 for NVFP4.
+    applies ``global_scale`` internally as the epilogue alpha. The SM70
+    fast/skip_flop dequant emits 2^-22x the true dequantized weight, so the
+    caller's (natural-scale) ``global_scale`` is multiplied by 2^22 before the
+    call -- the kernel's internal 2^-22 then nets to 1.0, giving the correct
+    end-to-end output magnitude for natural-scale checkpoints. The raw C++ op
+    is unchanged; this compensation lives in the wrapper. ``group_size`` is 16
+    for NVFP4.
 
     Args:
         a: FP16 activation tensor of shape (m, k).
         c: FP16 output buffer of shape (m, n).
         b_q_weight: NVFP4-packed weight (uint8).
         b_scales: group-16 scales (fp8_e4m3fn).
-        global_scale: per-tensor FP32 scale.
+        global_scale: per-tensor FP32 scale (natural-scale, not pre-scaled).
         m: number of rows of ``a`` / ``c``.
         n: number of output columns.
         k: inner (reduction) dimension.
@@ -70,6 +75,12 @@ def gemm(a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size):
     Returns:
         The output tensor (``c``).
     """
+    # The SM70 fast/skip_flop dequant emits 2^-22x the true dequantized weight
+    # (it omits the FP4->FP16 and FP8->FP16 exponent biases). Multiply the
+    # caller's natural-scale global_scale by 2^22 so the kernel's internal
+    # 2^-22 nets to 1.0, yielding correct end-to-end output magnitude. The raw
+    # C++ op is unchanged; this compensation lives in the wrapper.
+    global_scale = global_scale * 4194304.0  # 2**22
     return torch.ops._C.sm70_nvfp4_marlin_gemm(
         a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size
     )

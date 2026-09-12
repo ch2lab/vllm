@@ -2,22 +2,31 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Standalone numeric-correctness test for the SM70 NVFP4 GEMM op.
 
-Runs on a real V100 (GPU0, exact SM70) and compares the C op
-``torch.ops._C.sm70_nvfp4_marlin_gemm`` against an independent FP32 reference.
+Runs on a real V100 (GPU0, exact SM70) and compares the SM70 GEMM **wrapper**
+``vllm.sm70_nvfp4_ops.gemm`` against an independent FP32 reference computed with
+the **true** (natural-scale) dequant.
+
+The SM70 kernel uses the fast/skip_flop dequant, which emits 2^-22x the true
+dequantized weight; the wrapper compensates by scaling the caller's
+(natural-scale) ``global_scale`` by 2^22, so the kernel output has the correct
+end-to-end magnitude. This test validates exactly that SP2 concern: feeding a
+natural-scale ``global_scale`` (the kind a real NVFP4 checkpoint like QUASAR
+stores -- order 1e3, NOT pre-scaled by 2^22) yields an output that matches the
+true FP32 reference within a small FP16-accumulation tolerance (and is NOT
+2^-22x too small).
 
 Per shape it:
   1. builds synthetic NVFP4 weights (packed 4-bit E2M1 codes) + group-16
-     FP8-E4M3 scales + a per-tensor FP32 global_scale + FP16 activations;
-  2. computes an independent FP32 reference;
-  3. runs the SM70 GEMM op;
-  4. compares and prints PASS/FAIL with max abs / rel error.
+     FP8-E4M3 scales + a natural per-tensor FP32 global_scale + FP16 acts;
+  2. computes the independent FP32 true reference;
+  3. runs the SM70 GEMM wrapper;
+  4. compares and prints PASS/FAIL with max abs / rel error + magnitude.
 
 This script is standalone (no pytest). Run with:
     cd /data/src/vllm && CUDA_VISIBLE_DEVICES=0 VLLM_SM70_NVFP4=1 \
         python3 tests/sm70/test_sm70_nvfp4_correctness.py
 """
 
-import os
 import sys
 import numpy as np
 import torch
@@ -25,20 +34,22 @@ import torch
 torch.manual_seed(0)
 
 # ---------------------------------------------------------------------------
-# Load the C extension (registers torch.ops._C.sm70_nvfp4_marlin_gemm) without
-# pulling in the full `vllm` package (avoids the unrelated flash-attn gap).
+# Load the C extension (registers torch.ops._C.sm70_nvfp4_marlin_gemm) and the
+# Python wrapper. Importing vllm._C_stable_libtorch loads the top-level `vllm`
+# package (which does NOT pull in the flash-attn subtree), so the wrapper
+# vllm.sm70_nvfp4_ops is importable alongside it.
 # ---------------------------------------------------------------------------
 try:
     import vllm._C_stable_libtorch  # noqa: F401
+    from vllm.sm70_nvfp4_ops import gemm as sm70_gemm
 except Exception as exc:  # pragma: no cover - environment dependent
-    print(f"FATAL: could not load stable extension: {exc}")
+    print(f"FATAL: could not load stable extension / wrapper: {exc}")
     sys.exit(2)
 
 _OP = "sm70_nvfp4_marlin_gemm"
 if not hasattr(torch.ops._C, _OP):
     print("FATAL: torch.ops._C." + _OP + " not registered.")
     sys.exit(2)
-_gemm = getattr(torch.ops._C, _OP)
 
 DEVICE = "cuda"
 
@@ -47,18 +58,26 @@ LUT = np.array(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
      -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0], dtype=np.float32)
 
-# The kernel uses the fast (skip_flop=true) dequant, which omits the FP4->FP16
-# and FP8->FP16 exponent biases. Their magnitudes are:
-#   E2M1: (1 << (FP16_EXP-1)) - (1 << (FP4_EXP-1)) = 2^4 - 2^1 = 14  -> 2^-14
-#   E4M3: (1 << (FP16_EXP-1)) - (1 << (FP8_EXP-1)) = 2^4 - 2^3 = 8   -> 2^-8
-# So the kernel's effective dequantized weight = LUT * fp8scale * 2^-22.
-E2M1_BIAS_BITS = 14
-E4M3_BIAS_BITS = 8
-DEQ_SCALE = float(2.0) ** (-(E2M1_BIAS_BITS + E4M3_BIAS_BITS))  # 2**-22
+# The kernel's fast (skip_flop=true) dequant omits the FP4->FP16 and FP8->FP16
+# exponent biases, so its raw output is 2^-22x the true dequantized weight.
+# The wrapper multiplies the caller's natural-scale global_scale by 2^22 to
+# cancel this (see vllm.sm70_nvfp4_ops.gemm).
+DEQ_BIAS = float(2.0) ** 22  # the wrapper's compensation factor
 
-# Tolerance for the FP16 (kernel) vs FP32 (reference) accumulation difference.
-# PASS uses a global (Frobenius) relative error: robust to per-element
-# cancellation (near-zero elements) and isolates the FP16-accumulation error.
+# A NATURAL per-tensor scale, same order as the real QUASAR-NVFP4 checkpoint
+# (measured ~5173/8048) -- critically NOT the 2^22 (~4.19e6) that 1Cat
+# checkpoints bake in. With this gs the wrapper must produce the TRUE output
+# magnitude (not 2^-22x smaller).
+GS = 5120.0
+# Group-16 fp8 scale pool (all exactly representable in fp8_e4m3fn).
+SCALE_POOL = np.array([0.5, 1.0, 2.0, 4.0], dtype=np.float32)
+# Activation amplitude: keeps the FP16 GEMM output in range for this natural gs
+# (the relationship out == gs*(a @ b_deq.T) is scale-invariant in a).
+ACT_SCALE = 0.002
+
+# Global (Frobenius) relative error tolerance for the FP16 kernel vs FP32
+# reference: robust to per-element cancellation and isolates the FP16-
+# accumulation difference.
 RTOL = 1e-2
 
 
@@ -137,12 +156,12 @@ def to_scale_bytes(scale_vals: np.ndarray) -> np.ndarray:
     return b.view(torch.uint8).t().contiguous().cpu().numpy()
 
 
-def build(m: int, n: int, k: int, gs: float, scale_pool):
-    a = torch.randn(m, k, dtype=torch.float32, device=DEVICE).half()
+def build(m: int, n: int, k: int, gs: float):
+    """Build synthetic inputs: FP16 acts, packed codes, fp8 scales, gs, output."""
+    a = (torch.randn(m, k, dtype=torch.float32, device=DEVICE) * ACT_SCALE).half()
     code_mat = np.random.randint(0, 16, size=(k, n)).astype(np.int64)
-    # scale_vals (N, K//16): each entry drawn from distinct fp8 magnitudes.
     g = k // 16
-    scale_vals = scale_pool[np.random.randint(0, len(scale_pool), size=(n, g))]
+    scale_vals = SCALE_POOL[np.random.randint(0, len(SCALE_POOL), size=(n, g))]
     qw = pack_qweight(code_mat, k, n).to(DEVICE)
     scales = torch.from_numpy(to_scale_bytes(scale_vals)).to(DEVICE)
     gs_t = torch.tensor([gs], dtype=torch.float32, device=DEVICE)
@@ -150,71 +169,60 @@ def build(m: int, n: int, k: int, gs: float, scale_pool):
     return a, code_mat, scale_vals, qw, scales, gs_t, c
 
 
-def references(a, code_mat, scale_vals, gs, n, k):
-    """Independent FP32 references.
+def true_reference(a, code_mat, scale_vals, gs):
+    """Independent FP32 TRUE reference: ``gs * (a @ (e2m1(code)*fp8).T)``.
 
-    ref_true : gs * (a @ (LUT*fp8)^T)        -- the task-specified dequant.
-    ref_mech : gs * (a @ (LUT*fp8*DEQ_SCALE)^T) -- what the kernel actually
-              computes (fast/skip_flop dequant, 2^-22 lower).  Equals
-              DEQ_SCALE * ref_true exactly.
+    This is the natural-scale dequant (NO 2^-22 factor). With the wrapper's
+    2^22 compensation, the kernel output should match this exactly in magnitude
+    (before the fix it was 2^-22x smaller).
     """
-    lut_vals = LUT[code_mat]                       # (K, N)
-    b_true = (lut_vals.T * np.repeat(scale_vals, 16, axis=1)).astype(np.float32)
-    a_t = a.float().to(DEVICE)                      # (M, K) fp32
-    b_t = torch.from_numpy(b_true).to(DEVICE)       # (N, K) fp32
-    ref_true = (a_t @ b_t.T).mul_(gs)               # (M, N)
-    ref_mech = ref_true * DEQ_SCALE
-    return (ref_true.cpu().numpy().astype(np.float32),
-            ref_mech.cpu().numpy().astype(np.float32))
+    lut_vals = LUT[code_mat]  # (K, N)
+    b_deq = (lut_vals.T * np.repeat(scale_vals, 16, axis=1)).astype(np.float32)
+    a_t = a.float().to(DEVICE)                  # (M, K) fp32
+    b_t = torch.from_numpy(b_deq).to(DEVICE)    # (N, K) fp32
+    ref = (a_t @ b_t.T).mul_(gs)                # (M, N)
+    return ref.cpu().numpy().astype(np.float32)
 
 
-def run_shape(m, n, k, gs, scale_pool, verbose=True):
-    a, code_mat, scale_vals, qw, scales, gs_t, c = build(m, n, k, gs, scale_pool)
-    out = _gemm(a, c, qw, scales, gs_t, m, n, k, 16)
+def run_shape(m, n, k, gs, verbose=True):
+    a, code_mat, scale_vals, qw, scales, gs_t, c = build(m, n, k, gs)
+    # The wrapper scales gs by 2^22 internally to cancel the kernel's 2^-22.
+    out = sm70_gemm(a, c, qw, scales, gs_t, m, n, k, 16)
     torch.cuda.synchronize()
     out_f = out.float().cpu().numpy().astype(np.float32)
-    ref_true, ref_mech = references(a, code_mat, scale_vals, gs, n, k)
+    ref = true_reference(a, code_mat, scale_vals, gs)
 
-    d = out_f - ref_mech
+    d = out_f - ref
     max_abs = float(np.abs(d).max())
-    # Global (Frobenius) relative error: robust to per-element cancellation and
+    # Global (Frobenius) relative error: robust to per-element cancellation,
     # isolates the FP16 (kernel) vs FP32 (reference) accumulation difference.
-    frob = float(np.linalg.norm(d) / max(np.linalg.norm(ref_mech), 1e-30))
-    ok_mech = frob < RTOL
-    # Global magnitude ratio out/ref_true: if mechanics are right it is ~DEQ_SCALE.
-    mag_ratio = float(np.linalg.norm(out_f) / max(np.linalg.norm(ref_true), 1e-30))
+    frob = float(np.linalg.norm(d) / max(np.linalg.norm(ref), 1e-30))
+    ok = frob < RTOL
+    # Magnitude check: with the wrapper's compensation the output has the TRUE
+    # magnitude, so ||out||/||ref|| ~ 1.0 (was ~2^-22 before the fix).
+    mag_ratio = float(np.linalg.norm(out_f) / max(np.linalg.norm(ref), 1e-30))
 
     if verbose:
-        tag = "PASS" if ok_mech else "FAIL"
+        tag = "PASS" if ok else "FAIL"
         print(f"[{tag}] M={m:<4d} N={n:<6d} K={k:<6d} | "
-              f"frob_rel={frob:.3e} max_abs={max_abs:.3e} ok={ok_mech}")
-        print(f"        | ||out||/||ref_true||={mag_ratio:.4e} "
-              f"(expect ~2^-22={DEQ_SCALE:.4e})")
-    return ok_mech, frob, mag_ratio
+              f"frob_rel={frob:.3e} max_abs={max_abs:.3e} ok={ok}")
+        print(f"        | ||out||/||true_ref||={mag_ratio:.4e} (expect ~1.0)")
+    return ok, frob, mag_ratio
 
 
 def probe_real_dims(verbose=True):
-    """Probe the real-model dims K=11008, N=11008 (Qwen3.5)."""
+    """Probe the real-model dims K=N=11008 (Qwen3.5): accepted + true magnitude."""
     results = {}
     for (m, n, k) in [(1, 11008, 11008), (16, 11008, 11008)]:
         try:
-            a = torch.randn(m, k, dtype=torch.float32, device=DEVICE).half()
-            code_mat = np.random.randint(0, 16, size=(k, n))
-            scale_vals = np.ones((n, k // 16))
-            qw = pack_qweight(code_mat, k, n).to(DEVICE)
-            scales = torch.from_numpy(to_scale_bytes(scale_vals)).to(DEVICE)
-            gs_t = torch.tensor([1.0], dtype=torch.float32, device=DEVICE)
-            c = torch.zeros(m, n, dtype=torch.float16, device=DEVICE)
-            _gemm(a, c, qw, scales, gs_t, m, n, k, 16)
-            torch.cuda.synchronize()
-            ok_mech, frob, ratio = run_shape(m, n, k, 1.0, np.array([1.0, 2.0]))
-            results[(m, n, k)] = ("ACCEPTED", frob)
+            ok, frob, mag_ratio = run_shape(m, n, k, GS)
+            results[(m, n, k)] = ("ACCEPTED", frob, mag_ratio)
             if verbose:
                 print(f"[probe] M={m} N={n} K={k}: ACCEPTED by op; "
-                      f"mech PASS={ok_mech} frob_rel={frob:.4e} "
-                      f"||out||/||ref_true||={ratio:.4e}")
+                      f"mech PASS={ok} frob_rel={frob:.4e} "
+                      f"||out||/||true_ref||={mag_ratio:.4e}")
         except Exception as exc:  # TORCH_CHECK / alignment failure
-            results[(m, n, k)] = ("REJECTED", str(exc)[:200])
+            results[(m, n, k)] = ("REJECTED", str(exc)[:200], None)
             if verbose:
                 print(f"[probe] M={m} N={n} K={k}: REJECTED: {str(exc)[:200]}")
     return results
@@ -230,49 +238,42 @@ def main():
         print("WARNING: not exact SM70; the op may not dispatch. "
               "Continuing for reporting.")
 
-    # A global_scale that keeps the (fast-dequant) output in normal FP16 range
-    # while leaving the 2^-22 dequant bias visible in out/ref_true.
-    scale_pool = np.array([0.5, 1.0, 2.0, 4.0], dtype=np.float32)
-    gs = float(2.0 ** 22)  # cancels DEQ_SCALE so |out| ~ O(sqrt(K)*|a|*|w|)
-
-    shapes = []
-    for m in (1, 16, 64, 512):
-        for n in (4096, 8192):
-            for k in (4096, 8192):
-                shapes.append((m, n, k))
+    shapes = [(m, n, k)
+              for m in (1, 16, 64, 512)
+              for n in (4096, 8192)
+              for k in (4096, 8192)]
 
     print("=" * 78)
-    print("SM70 NVFP4 GEMM correctness (mech reference uses the kernel's own "
-          "fast-dequant = LUT*fp8*2^-22)")
+    print(f"SM70 NVFP4 GEMM true-magnitude test (wrapper compensates 2^-22; "
+          f"natural gs={GS:g})")
     print("=" * 78)
     n_pass = 0
     frobs = []
     mag_ratios = []
     for (m, n, k) in shapes:
         try:
-            ok_mech, frob, mag_ratio = run_shape(m, n, k, gs, scale_pool)
-            n_pass += int(ok_mech)
+            ok, frob, mag_ratio = run_shape(m, n, k, GS)
+            n_pass += int(ok)
             frobs.append(frob)
             mag_ratios.append(mag_ratio)
         except Exception as exc:
             print(f"[ERROR] M={m} N={n} K={k}: {str(exc)[:200]}")
 
     print("-" * 78)
-    print(f"Mechanics: {n_pass}/{len(shapes)} shapes PASS "
+    print(f"True-magnitude: {n_pass}/{len(shapes)} shapes PASS "
           f"(Frobenius rel err < {RTOL})")
     if frobs:
         print(f"worst Frobenius rel err: {max(frobs):.4e} "
               f"(min={min(frobs):.4e})")
     if mag_ratios:
         rmin, rmax = min(mag_ratios), max(mag_ratios)
-        print(f"||out||/||ref_true|| range: [{rmin:.4e}, {rmax:.4e}] "
-              f"(expected ~2^-22 = {DEQ_SCALE:.4e})")
+        print(f"||out||/||true_ref|| range: [{rmin:.4e}, {rmax:.4e}] "
+              f"(expect ~1.0; was ~2^-22={DEQ_BIAS ** -1:.4e} before the fix)")
     print("-" * 78)
-    print("Real-model dim probe (Qwen3.5):")
+    print("Real-model dim probe (Qwen3.5, natural gs):")
     probe_real_dims()
 
-    # Exit 0 iff every mechanics comparison passed. The 2^-22 dequant bias is
-    # reported separately (a dequant-model issue, not a GEMM-mechanics error).
+    # Exit 0 iff every shape matched the true reference within tolerance.
     sys.exit(0 if n_pass == len(shapes) else 1)
 
 
