@@ -62,6 +62,9 @@ class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
     ) -> torch.Tensor:
         k = layer.input_size_per_partition
         n = layer.output_size_per_partition
+        # The SM70 GEMM is FP16-internal; capture the caller's dtype (FP16 or
+        # BF16) and cast the result back so the output matches the model dtype.
+        out_dtype = x.dtype
         a = x.reshape(-1, k).to(torch.float16)
         m = a.shape[0]
         c = torch.empty((m, n), dtype=torch.float16, device=x.device)
@@ -78,4 +81,4 @@ class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
         )
         if bias is not None:
             out = out + bias.to(out.dtype)
-        return out.reshape(*x.shape[:-1], n)
+        return out.to(out_dtype).reshape(*x.shape[:-1], n)

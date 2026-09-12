@@ -546,6 +546,10 @@ _POSSIBLE_MXFP8_KERNELS: dict[PlatformEnum, list[type[Mxfp8LinearKernel]]] = {
 
 _POSSIBLE_NVFP4_KERNELS: dict[PlatformEnum, list[type[NvFp4LinearKernel]]] = {
     PlatformEnum.CUDA: [
+        # SM70 (V100/Volta) weight-only NVFP4; first so the W4A4 registry walk
+        # selects it on exact SM70 + VLLM_SM70_NVFP4 (inert everywhere else,
+        # since is_supported fails closed outside SM70+env).
+        Sm70MarlinNvFp4LinearKernel,
         FlashInferCuteDslNvFp4LinearKernel,
         FlashInferCutlassNvFp4LinearKernel,
         FlashInferB12xNvFp4LinearKernel,
@@ -1042,8 +1046,11 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
     current platform."""
     config = NvFp4LinearLayerConfig()
     a16_kernels = (
-        # SM70 (V100/Volta) weight-only NVFP4; only enabled on exact SM70 with
-        # VLLM_SM70_NVFP4 and a registered SM70 GEMM op, so it is inert elsewhere.
+        # Membership set of kernels valid for the W4A16 (use_a16) NVFP4 path.
+        # Order here is NOT a priority order: W4A16 selection comes from the
+        # force branch below (auto backend) and W4A4 selection from the
+        # _POSSIBLE_NVFP4_KERNELS registry walk; this tuple is membership-only.
+        # Sm70MarlinNvFp4LinearKernel is active only on exact SM70 + VLLM_SM70_NVFP4.
         Sm70MarlinNvFp4LinearKernel,
         FlashInferCuteDslNvFp4W4A16LinearKernel,
         MarlinNvFp4LinearKernel,
