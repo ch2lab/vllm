@@ -192,17 +192,19 @@ def build(m: int, n: int, k: int, gs: float):
 
 
 def true_reference(a, code_mat, scale_vals, gs):
-    """Independent FP32 TRUE reference: ``gs * (a @ (e2m1(code)*fp8).T)``.
+    """Independent FP32 TRUE reference: ``(a @ (e2m1(code)*fp8).T) / gs``.
 
-    This is the natural-scale dequant (NO 2^-22 factor). With the wrapper's
-    2^22 compensation, the kernel output should match this exactly in magnitude
-    (before the fix it was 2^-22x smaller).
+    The checkpoint's raw ``weight_global_scale`` is a DENORMALIZATION divisor
+    (w_true = code * block_scale / gs); 1Cat inverts it at load time and our
+    wrapper passes (1/gs) * 2^22 as the kernel epilogue alpha.  This reference
+    is the natural-scale dequant (NO 2^-22 factor); with the wrapper's 2^22
+    compensation the kernel output matches it in magnitude.
     """
     lut_vals = LUT[code_mat]  # (K, N)
     b_deq = (lut_vals.T * np.repeat(scale_vals, 16, axis=1)).astype(np.float32)
     a_t = a.float().to(DEVICE)                  # (M, K) fp32
     b_t = torch.from_numpy(b_deq).to(DEVICE)    # (N, K) fp32
-    ref = (a_t @ b_t.T).mul_(gs)                # (M, N)
+    ref = (a_t @ b_t.T).div_(gs)                 # (M, N)
     return ref.cpu().numpy().astype(np.float32)
 
 
@@ -258,7 +260,7 @@ def run_fallback_shape(m, n, k, gs, verbose=True):
     W_fp16 = dequant_nvfp4_to_fp16(qw, scales, k, n)
     a_fp16 = a.reshape(-1, k).to(torch.float16)
     out = F.linear(a_fp16, W_fp16).to(torch.float32)
-    out = out * torch.tensor(gs, dtype=torch.float32, device=DEVICE)
+    out = out / torch.tensor(gs, dtype=torch.float32, device=DEVICE)
     torch.cuda.synchronize()
     out_f = out.cpu().numpy().astype(np.float32)
     ref = true_reference(a, code_mat, scale_vals, gs)
