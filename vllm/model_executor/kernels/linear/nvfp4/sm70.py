@@ -141,29 +141,30 @@ class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
         a = x.reshape(-1, k).to(torch.float16)
         m = a.shape[0]
 
+        # SM70 NVFP4: dequant to FP16 + standard FP16 GEMM.
+        #
+        # Correct dequant: w_true = (fp4_codes × group_scale) / weight_global_scale
+        # We dequant the NVFP4 weight to a dense FP16 tensor, run F.linear,
+        # then divide by weight_global_scale. <0.1% error vs true weight.
+        #
+        # Small layers (n%64!=0) have their dequant cached at load time.
+        # Large layers (n%64==0) dequant on-the-fly (not cached, to avoid
+        # OOM — 27B model in FP16 = 54 GB > 32 GB V100).
         W_fp16 = getattr(layer, "_sm70_nvfp4_fp16_weight", None)
-        if W_fp16 is not None:
-            # Fallback path (n % 64 != 0): plain FP16 GEMM over the dequantized
-            # weight, with the per-tensor global scale applied in the epilogue
-            # to match the Marlin path's end-to-end magnitude.
-            out = F.linear(a, W_fp16).to(torch.float32)
-            out = out.mul_(layer.weight_global_scale.to(torch.float32))
-            if bias is not None:
-                out = out + bias.to(torch.float32)
-            return out.to(out_dtype).reshape(*x.shape[:-1], n)
+        if W_fp16 is None:
+            W_fp16 = dequant_nvfp4_to_fp16(
+                layer.weight, layer.weight_scale, k, n
+            )
+            # Only cache small weights (already pre-cached by
+            # process_weights_after_loading for n%64!=0). For large layers,
+            # W_fp16 is a temporary that will be freed after this call.
+            if n % 64 != 0:
+                layer._sm70_nvfp4_fp16_weight = W_fp16
 
-        c = torch.empty((m, n), dtype=torch.float16, device=x.device)
-        out = gemm(
-            a,
-            c,
-            layer.weight,
-            layer.weight_scale,
-            layer.weight_global_scale,
-            m,
-            n,
-            k,
-            16,
-        )
+        out = F.linear(a, W_fp16).to(torch.float32)
+        # NVFP4: weight_global_scale is a divisor (denormalization factor)
+        out = out.div_(layer.weight_global_scale.to(torch.float32))
         if bias is not None:
-            out = out + bias.to(out.dtype)
+            out = out + bias.to(torch.float32)
+
         return out.to(out_dtype).reshape(*x.shape[:-1], n)

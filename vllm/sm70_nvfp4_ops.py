@@ -77,10 +77,13 @@ def gemm(a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size):
     """
     # The SM70 fast/skip_flop dequant emits 2^-22x the true dequantized weight
     # (it omits the FP4->FP16 and FP8->FP16 exponent biases). Multiply the
-    # caller's natural-scale global_scale by 2^22 so the kernel's internal
-    # 2^-22 nets to 1.0, yielding correct end-to-end output magnitude. The raw
-    # C++ op is unchanged; this compensation lives in the wrapper.
-    global_scale = global_scale * 4194304.0  # 2**22
+    # caller's scale by 2^22 so the kernel's internal 2^-22 nets to 1.0.
+    #
+    # NVFP4 convention: weight_global_scale is a DENORMALIZATION factor
+    # (divisor), not a multiplier. The true dequantized weight is:
+    #   w_true = w_fp4_code * group_scale / weight_global_scale
+    # So the epilogue must use 1/weight_global_scale (the inverse).
+    global_scale = (1.0 / global_scale) * 4194304.0  # (1/GS) * 2^22
     return torch.ops._C.sm70_nvfp4_marlin_gemm(
         a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size
     )
