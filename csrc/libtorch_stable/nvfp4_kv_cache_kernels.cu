@@ -20,6 +20,7 @@
 #include "libtorch_stable/dispatch_utils.h"
 #include "libtorch_stable/torch_utils.h"
 
+#include <cuda_fp8.h>
 #include <cmath>
 #include <string>
 
@@ -114,6 +115,10 @@ __device__ __forceinline__ float nvfp4_reconstruction_error(
   return error;
 }
 
+// Blackwell-only PTX path (cvt.rn.satfinite.e2m1x2.f32): compiled only for
+// SM100/SM120.  On SM70 (Volta) this instruction is unavailable, so the
+// portable kernel below is used instead.
+#if defined(ENABLE_NVFP4_SM100) || defined(ENABLE_NVFP4_SM120)
 template <class Type, int CVT_FP4_NUM_THREADS_PER_SF>
 __device__ __forceinline__ fp4_packed_t cvt_warp_fp16_to_fp4_4over6(
     PackedVec<Type, CVT_FP4_PACK16>& vec, float SFScaleVal, uint8_t* SFout) {
@@ -187,8 +192,7 @@ __global__ void reshape_and_cache_nvfp4_kernel(
     const int64_t scale_head_stride,          // scale cache stride for heads
     const int64_t scale_block_offset_stride,  // scale cache stride for tokens
     const bool swizzle_v_sf  // V scale layout: true = SM100 trtllm-gen 4-token
-                             // swizzle; false = linear (FlashInfer FA2 sm12x)
-) {
+                             // swizzle; false = linear (FlashInfer FA2 sm12x)) {
   using CudaType = typename CUDATypeConverter<scalar_t>::Type;
   using PVec = PackedVec<CudaType, CVT_FP4_PACK16>;
 
@@ -289,8 +293,7 @@ __global__ void reshape_and_cache_nvfp4_kernel(
       if (sf_out_ptr != nullptr) {
         int scale_idx = group_in_head;
         uint8_t* __restrict__ scale_dst;
-        if (kv == 0 || !swizzle_v_sf) {
-          scale_dst = scale_block + head * scale_head_stride +
+        if (kv == 0 || !swizzle_v_sf) {          scale_dst = scale_block + head * scale_head_stride +
                       block_offset * scale_block_offset_stride + scale_idx;
         } else {
           int swizzled_offset =
@@ -305,6 +308,151 @@ __global__ void reshape_and_cache_nvfp4_kernel(
     }
   }
 }
+#endif  // defined(ENABLE_NVFP4_SM100) || defined(ENABLE_NVFP4_SM120)
+
+#if defined(ENABLE_NVFP4_SM70)
+
+// Portable SM70 (Volta) store path: the Blackwell cvt.rn.satfinite.e2m1x2.f32
+// PTX is unavailable on sm_70, so the FP4 (E2M1) rounding and FP8-E4M3 block
+// scale encode are done in portable C++.
+
+// Map an already-E2M1-rounded value to its 4-bit code.  Thresholds are the
+// midpoints of the representable magnitudes {0, .5, 1, 1.5, 2, 3, 4, 6}.
+__device__ __forceinline__ uint8_t nvfp4_sm70_e2m1_code(float v) {
+  const bool neg = v < 0.0f;
+  const float a = fabsf(v);
+  uint8_t mag;
+  if (a < 0.25f) {
+    mag = 0;
+  } else if (a < 0.75f) {
+    mag = 1;
+  } else if (a < 1.25f) {
+    mag = 2;
+  } else if (a < 1.75f) {
+    mag = 3;
+  } else if (a < 2.5f) {
+    mag = 4;
+  } else if (a < 3.5f) {
+    mag = 5;
+  } else if (a < 5.0f) {
+    mag = 6;
+  } else {
+    mag = 7;
+  }
+  return static_cast<uint8_t>(neg ? (0x8u | mag) : mag);
+}
+
+// SM70 NVFP4 store kernel: one block per token; threads grid-stride over
+// (head, group) pairs, processing K then V.  Writes packed FP4 data + linear
+// (or, only if requested, swizzled) FP8 block scales.
+template <typename scalar_t>
+__global__ void reshape_and_cache_nvfp4_kernel_sm70(
+    const scalar_t* __restrict__ key,
+    const scalar_t* __restrict__ value,
+    uint8_t* __restrict__ key_data_cache,
+    uint8_t* __restrict__ value_data_cache,
+    uint8_t* __restrict__ key_scale_cache,
+    uint8_t* __restrict__ value_scale_cache,
+    const int64_t* __restrict__ slot_mapping,
+    const float* __restrict__ k_scale_ptr,
+    const float* __restrict__ v_scale_ptr,
+    const int64_t key_stride,
+    const int64_t value_stride,
+    const int num_heads,
+    const int head_size,
+    const int block_size,
+    const int64_t data_block_stride,
+    const int64_t data_head_stride,
+    const int64_t data_block_offset_stride,
+    const int64_t scale_block_stride,
+    const int64_t scale_head_stride,
+    const int64_t scale_block_offset_stride,
+    const bool swizzle_v_scale) {
+  using CudaType = typename CUDATypeConverter<scalar_t>::Type;
+
+  const int64_t token_idx = blockIdx.x;
+  const int64_t slot_idx = slot_mapping[token_idx];
+  if (slot_idx < 0) return;
+  const int64_t block_idx = slot_idx / block_size;
+  const int block_offset = static_cast<int>(slot_idx % block_size);
+
+  const int scale_dim = head_size / 16;
+  const int groups_per_head = head_size / 16;
+  const int total_groups = num_heads * groups_per_head;
+
+  for (int g = threadIdx.x; g < total_groups; g += blockDim.x) {
+    const int head = g / groups_per_head;
+    const int group_in_head = g % groups_per_head;
+
+#pragma unroll
+    for (int kv = 0; kv < 2; kv++) {
+      const scalar_t* __restrict__ src = (kv == 0) ? key : value;
+      const float global_scale =
+          1.0f / ((kv == 0) ? *k_scale_ptr : *v_scale_ptr);
+      const int64_t src_stride = (kv == 0) ? key_stride : value_stride;
+      uint8_t* __restrict__ data_cache =
+          (kv == 0) ? key_data_cache : value_data_cache;
+      uint8_t* __restrict__ sc_cache =
+          (kv == 0) ? key_scale_cache : value_scale_cache;
+
+      const CudaType* __restrict__ token_src =
+          reinterpret_cast<const CudaType*>(src) + token_idx * src_stride;
+      const int base = head * head_size + group_in_head * 16;
+
+      float vals[16];
+      float vecMax = 0.0f;
+#pragma unroll
+      for (int i = 0; i < 16; i++) {
+        const float f = float(token_src[base + i]);
+        vals[i] = f;
+        vecMax = fmaxf(vecMax, fabsf(f));
+      }
+
+      // Block scale: SFValue = global_scale * vecMax / 6, stored as FP8-E4M3.
+      const float SFValue = global_scale * (vecMax * (1.0f / 6.0f));
+      __nv_fp8_e4m3 sf_tmp = __nv_fp8_e4m3(SFValue);
+      const uint8_t sf_code = sf_tmp.__x;
+      const float SFValue_r = float(sf_tmp);
+      const float outputScale = (SFValue_r != 0.0f)
+                                    ? (1.0f / (SFValue_r * (1.0f / global_scale)))
+                                    : 0.0f;
+
+      uint8_t data[8];
+#pragma unroll
+      for (int i = 0; i < 8; i++) {
+        const float lo = round_to_nearest_e2m1(vals[2 * i] * outputScale);
+        const float hi = round_to_nearest_e2m1(vals[2 * i + 1] * outputScale);
+        data[i] = static_cast<uint8_t>((nvfp4_sm70_e2m1_code(hi) << 4) |
+                                        nvfp4_sm70_e2m1_code(lo));
+      }
+
+      uint8_t* __restrict__ data_dst =
+          data_cache + block_idx * data_block_stride +
+          head * data_head_stride + block_offset * data_block_offset_stride +
+          group_in_head * 8;
+#pragma unroll
+      for (int i = 0; i < 8; i++) {
+        data_dst[i] = data[i];
+      }
+
+      uint8_t* __restrict__ scale_block = sc_cache + block_idx * scale_block_stride;
+      uint8_t* __restrict__ scale_dst;
+      if (kv == 0 || !swizzle_v_scale) {
+        scale_dst = scale_block + head * scale_head_stride +
+                    block_offset * scale_block_offset_stride + group_in_head;
+      } else {
+        const int swizzled_offset =
+            swizzle_scale_offset(block_offset, group_in_head, scale_dim);
+        const int swizzled_t = swizzled_offset / scale_dim;
+        const int swizzled_s = swizzled_offset % scale_dim;
+        scale_dst = scale_block + head * scale_head_stride +
+                    swizzled_t * scale_block_offset_stride + swizzled_s;
+      }
+      *scale_dst = sf_code;
+    }
+  }
+}
+#endif  // defined(ENABLE_NVFP4_SM70)
 
 }  // namespace vllm
 
@@ -398,8 +546,34 @@ void reshape_and_cache_nvfp4_dispatch(
       key.get_device_index());
   const cudaStream_t stream = get_current_cuda_stream();
 
+  // V-scale layout: the upstream store writes a swizzled V-scale block for
+  // the SM100/SM120 readers; the SM70 (Volta) linear attention reader needs a
+  // linear one.  Gate on the runtime device capability so only SM70 changes
+  // (SM100/SM120 keep the upstream swizzled layout).
+  int sm_major = 0;
+  cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor,
+                         key.get_device_index());
+  const bool swizzle_v_scale = (sm_major != 7);
+
   VLLM_STABLE_DISPATCH_HALF_TYPES(
       key.scalar_type(), "reshape_and_cache_nvfp4", [&] {
+#if defined(ENABLE_NVFP4_SM70)
+        // SM70 (Volta): portable path (no Blackwell cvt.e2m1x2 PTX).  The
+        // 4-over-6 scale search is an SM100/SM120 refinement; both NVFP4
+        // dtypes store the same layout here, so both route to this kernel.
+        vllm::reshape_and_cache_nvfp4_kernel_sm70<scalar_t>
+            <<<grid, block, 0, stream>>>(
+                key.const_data_ptr<scalar_t>(),
+                value.const_data_ptr<scalar_t>(),
+                key_cache.mutable_data_ptr<uint8_t>(),
+                value_cache.mutable_data_ptr<uint8_t>(), key_scale_ptr,
+                value_scale_ptr, slot_mapping.const_data_ptr<int64_t>(),
+                k_scale_ptr, v_scale_ptr, key.stride(0), value.stride(0),
+                num_heads, head_size, block_size, data_block_stride,
+                data_head_stride, data_block_offset_stride,
+                scale_block_stride, scale_head_stride,
+                scale_block_offset_stride, swizzle_v_scale);
+#elif defined(ENABLE_NVFP4_SM100) || defined(ENABLE_NVFP4_SM120)
         if (kv_cache_dtype == "nvfp4") {
           vllm::reshape_and_cache_nvfp4_kernel<
               scalar_t, vllm::NVFP4KVScaleSearch::DEFAULT>
@@ -413,8 +587,7 @@ void reshape_and_cache_nvfp4_dispatch(
                   num_heads, head_size, block_size, data_block_stride,
                   data_head_stride, data_block_offset_stride,
                   scale_block_stride, scale_head_stride,
-                  scale_block_offset_stride, swizzle_v_sf);
-        } else if (kv_cache_dtype == "nvfp4_4over6") {
+                  scale_block_offset_stride, swizzle_v_sf);        } else if (kv_cache_dtype == "nvfp4_4over6") {
           vllm::reshape_and_cache_nvfp4_kernel<
               scalar_t, vllm::NVFP4KVScaleSearch::FOUR_OVER_SIX>
               <<<grid, block, 0, stream>>>(
@@ -427,10 +600,10 @@ void reshape_and_cache_nvfp4_dispatch(
                   num_heads, head_size, block_size, data_block_stride,
                   data_head_stride, data_block_offset_stride,
                   scale_block_stride, scale_head_stride,
-                  scale_block_offset_stride, swizzle_v_sf);
-        } else {
+                  scale_block_offset_stride, swizzle_v_sf);        } else {
           STD_TORCH_CHECK(false,
                           "Unsupported NVFP4 KV cache dtype: ", kv_cache_dtype);
         }
+#endif
       });
 }

@@ -18,6 +18,7 @@ from vllm.model_executor.parameter import (
     ModelWeightParameter,
     PerTensorScaleParameter,
 )
+from vllm.sm70_nvfp4_ops import is_enabled
 
 logger = init_logger(__name__)
 
@@ -33,6 +34,8 @@ class CompressedTensorsW4A4Fp4(CompressedTensorsScheme):
 
     @classmethod
     def get_min_capability(cls) -> int:
+        if is_enabled():
+            return 70
         return 75
 
     def create_weights(

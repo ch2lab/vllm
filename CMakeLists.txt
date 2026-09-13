@@ -126,7 +126,7 @@ elseif(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
   set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;11.0;12.0")
 elseif(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
    CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
-  set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;10.3;12.0;12.1")
+  set(CUDA_SUPPORTED_ARCHS "7.0;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;10.3;12.0;12.1")
 else()
   set(CUDA_SUPPORTED_ARCHS "7.0;7.5;8.0;8.6;8.7;8.9;9.0")
 endif()
@@ -740,6 +740,39 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
       message(STATUS "Not building Marlin kernels as no compatible archs found"
                      " in CUDA target architectures")
     endif()
+
+  # SM70 (V100) Marlin NVFP4 GEMM — self-contained SM70-only subsystem.
+  # The standard Marlin block above is skipped on SM70 (MARLIN_OTHER_ARCHS is
+  # empty there), so this file is added independently and scoped to SM70.
+  cuda_archs_loose_intersection(SM70_NVFP4_ARCHS "7.0" "${CUDA_ARCHS}")
+  if(SM70_NVFP4_ARCHS)
+    set(SM70_NVFP4_SRCS
+       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_gemm.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${SM70_NVFP4_SRCS}"
+      CUDA_ARCHS "${SM70_NVFP4_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SM70_NVFP4_SRCS}")
+    message(STATUS "Building SM70 Marlin NVFP4 GEMM for archs: ${SM70_NVFP4_ARCHS}")
+  else()
+    message(STATUS "Not building SM70 Marlin NVFP4 GEMM (no SM70 arch in targets).")
+  endif()
+
+  # SM70 (V100) NVFP4 KV-cache store kernel — bf16 K/V -> packed FP4 + FP8
+  # block scales.  The store arithmetic is HW-agnostic; the kernel is reused
+  # for SM70's linear (non-swizzled) V-scale layout.  Compiled for SM70 in
+  # addition to the standard SM100/SM120 blocks above (which gate on Blackwell
+  # archs).  When present, cache_kernels.cu routes the nvfp4 store through it
+  # (ENABLE_NVFP4_SM70) instead of failing the SM100+ check.
+  if(SM70_NVFP4_ARCHS)
+    set(SM70_NVFP4_KV_SRCS
+       "csrc/libtorch_stable/nvfp4_kv_cache_kernels.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${SM70_NVFP4_KV_SRCS}"
+      CUDA_ARCHS "${SM70_NVFP4_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SM70_NVFP4_KV_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_NVFP4_SM70=1")
+    message(STATUS "Building SM70 NVFP4 KV-cache store for archs: ${SM70_NVFP4_ARCHS}")
+  endif()
 
   # DeepSeek V3 fused A GEMM kernel (requires SM 9.0+, Hopper and later)
   if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)

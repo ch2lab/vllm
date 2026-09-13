@@ -31,10 +31,26 @@ from vllm.vllm_flash_attn.flash_attn_interface import (  # noqa: E402
 )
 
 if not (FA2_AVAILABLE or FA3_AVAILABLE):
-    raise ImportError(
-        "vllm.vllm_flash_attn requires the CUDA flash attention extensions "
-        "(_vllm_fa2_C or _vllm_fa3_C). On ROCm, use upstream flash_attn."
-    )
+    # On SM70 (Volta V100) the FA2/FA3 extensions cannot be built (no FP8/TF32
+    # tensor cores), so this import would otherwise hard-fail before any
+    # attention backend is chosen. FlashInfer's SM70 paged path is used instead,
+    # so degrade to a warning rather than raising. Other configs are unchanged:
+    # where FlashAttention is expected but its extensions are missing, the
+    # original ImportError is still raised.
+    from vllm.platforms import current_platform  # lazy: avoid an import cycle
+
+    if current_platform.is_device_capability_family(70):
+        from vllm.logger import init_logger
+
+        init_logger(__name__).warning(
+            "vllm_flash_attn: FA2/FA3 extensions unavailable on SM70; "
+            "FlashAttention backends are disabled. Use the FlashInfer backend."
+        )
+    else:
+        raise ImportError(
+            "vllm.vllm_flash_attn requires the CUDA flash attention extensions "
+            "(_vllm_fa2_C or _vllm_fa3_C). On ROCm, use upstream flash_attn."
+        )
 
 __all__ = [
     "compile_flash_attn_varlen_func_from_specs",

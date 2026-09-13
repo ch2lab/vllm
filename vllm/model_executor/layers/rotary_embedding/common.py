@@ -220,7 +220,14 @@ class ApplyRotaryEmb(CustomOp):
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> torch.Tensor:
-        from vllm.vllm_flash_attn.layers.rotary import apply_rotary_emb
+        try:
+            from vllm.vllm_flash_attn.layers.rotary import apply_rotary_emb
+        except ImportError:
+            # SM70 (Volta V100): the FA2 rotary extension is unavailable (no
+            # FP8/TF32 tensor cores). Fall back to the numerically-equivalent
+            # pure-PyTorch rotary. On SM80+ the import succeeds and the fused
+            # FA kernel is used, so behavior there is unchanged.
+            return self.forward_native(x, cos, sin)
 
         x, cos, sin, origin_shape, origin_dtype = self._pre_process(x, cos, sin)
 

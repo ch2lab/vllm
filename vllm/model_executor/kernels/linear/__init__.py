@@ -165,6 +165,9 @@ from vllm.model_executor.kernels.linear.nvfp4.marlin import (
 from vllm.model_executor.kernels.linear.nvfp4.pytorch import (
     TorchNvFp4LinearKernel,
 )
+from vllm.model_executor.kernels.linear.nvfp4.sm70 import (
+    Sm70MarlinNvFp4LinearKernel,
+)
 from vllm.model_executor.kernels.linear.scaled_mm import (
     Fp8BlockScaledMMLinearKernel,
     FP8ScaledMMLinearKernel,
@@ -543,6 +546,10 @@ _POSSIBLE_MXFP8_KERNELS: dict[PlatformEnum, list[type[Mxfp8LinearKernel]]] = {
 
 _POSSIBLE_NVFP4_KERNELS: dict[PlatformEnum, list[type[NvFp4LinearKernel]]] = {
     PlatformEnum.CUDA: [
+        # SM70 (V100/Volta) weight-only NVFP4; first so the W4A4 registry walk
+        # selects it on exact SM70 + VLLM_SM70_NVFP4 (inert everywhere else,
+        # since is_supported fails closed outside SM70+env).
+        Sm70MarlinNvFp4LinearKernel,
         FlashInferCuteDslNvFp4LinearKernel,
         FlashInferCutlassNvFp4LinearKernel,
         FlashInferB12xNvFp4LinearKernel,
@@ -1039,6 +1046,12 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
     current platform."""
     config = NvFp4LinearLayerConfig()
     a16_kernels = (
+        # Membership set of kernels valid for the W4A16 (use_a16) NVFP4 path.
+        # Order here is NOT a priority order: W4A16 selection comes from the
+        # force branch below (auto backend) and W4A4 selection from the
+        # _POSSIBLE_NVFP4_KERNELS registry walk; this tuple is membership-only.
+        # Sm70MarlinNvFp4LinearKernel is active only on exact SM70 + VLLM_SM70_NVFP4.
+        Sm70MarlinNvFp4LinearKernel,
         FlashInferCuteDslNvFp4W4A16LinearKernel,
         MarlinNvFp4LinearKernel,
         HummingNvFp4LinearKernel,
@@ -1081,15 +1094,25 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
     elif linear_backend == "auto" and use_a16:
         _cc = current_platform.get_device_capability()
         compute_capability = _cc.to_int() if _cc is not None else None
-        # Weight-only: prefer FlashInfer CuTe-DSL W4A16 on SM100/103,
-        # otherwise Marlin.
-        cutedsl_ok, _ = FlashInferCuteDslNvFp4W4A16LinearKernel.is_supported(
+        # SM70 (V100/Volta): weight-only NVFP4 GEMM when enabled. Its
+        # is_supported fails closed unless we are on exact SM70 with
+        # VLLM_SM70_NVFP4 and a registered op, so the Marlin/CuTe-DSL
+        # behavior below is preserved everywhere else.
+        sm70_supported, _ = Sm70MarlinNvFp4LinearKernel.is_supported(
             compute_capability
         )
-        if compute_capability in (100, 103) and cutedsl_ok:
-            force_kernel = FlashInferCuteDslNvFp4W4A16LinearKernel
+        if sm70_supported:
+            force_kernel = Sm70MarlinNvFp4LinearKernel
         else:
-            force_kernel = MarlinNvFp4LinearKernel
+            # Weight-only: prefer FlashInfer CuTe-DSL W4A16 on SM100/103,
+            # otherwise Marlin.
+            cutedsl_ok, _ = FlashInferCuteDslNvFp4W4A16LinearKernel.is_supported(
+                compute_capability
+            )
+            if compute_capability in (100, 103) and cutedsl_ok:
+                force_kernel = FlashInferCuteDslNvFp4W4A16LinearKernel
+            else:
+                force_kernel = MarlinNvFp4LinearKernel
 
     if force_kernel is not None:
         if use_a16 and force_kernel not in a16_kernels:

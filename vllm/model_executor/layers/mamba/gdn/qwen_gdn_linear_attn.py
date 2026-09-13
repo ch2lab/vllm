@@ -93,7 +93,7 @@ FUSED_GDN_STATE_DTYPES = (torch.float32, torch.bfloat16)
 
 def _resolve_gdn_prefill_backend(
     vllm_config: VllmConfig,
-) -> tuple[str, Literal["triton", "flashinfer", "cutedsl"]]:
+) -> tuple[str, Literal["triton", "flashinfer", "cutedsl", "sm70_cuda"]]:
     """Resolve GDN prefill backend.
 
     FlashInfer's GDN prefill kernel is chosen when:
@@ -107,6 +107,10 @@ def _resolve_gdn_prefill_backend(
     In-tree CuteDSL GDN prefill kernel is chosen when:
     * "cutedsl" is requested; (opt-in only)
     * Blackwell (SM10.x) with ``head_k_dim == 128``;
+
+    SM70 CUDA GDN kernel is chosen when:
+    * SM70/SM75 (V100) with ``head_k_dim == 128``;
+    * The FLA Triton kernel does not work correctly on SM70 (fp16 precision).
     """
     additional_config = vllm_config.additional_config
     backend_cfg = (
@@ -125,8 +129,17 @@ def _resolve_gdn_prefill_backend(
 
     supports_flashinfer = False
     supports_cutedsl = False
+    supports_sm70_cuda = False
 
-    if current_platform.is_device_capability(90):
+    import os
+    cap = current_platform.get_device_capability()
+    if cap is not None and cap.major == 7 and cap.minor in (0, 5):
+        # SM70/SM75 (V100): custom CUDA GDN kernel (optional, for perf).
+        # Disabled by default — use FLA Triton (same logic as SM120).
+        # Set VLLM_SM70_GDN_CUDA=1 to enable the custom SM70 kernel.
+        if head_k_dim == 128 and os.environ.get("VLLM_SM70_GDN_CUDA", "0") == "1":
+            supports_sm70_cuda = True
+    elif current_platform.is_device_capability(90):
         supports_flashinfer = True
     elif (
         current_platform.is_device_capability_family(100)
@@ -143,6 +156,8 @@ def _resolve_gdn_prefill_backend(
         # The in-tree CuteDSL kernel targets SM100 only, so it stays off here.
         supports_flashinfer = True
 
+    if backend in ("auto", "sm70_cuda") and supports_sm70_cuda:
+        return backend, "sm70_cuda"
     if backend in ["flashinfer", "auto"] and supports_flashinfer:
         return backend, "flashinfer"
     if backend == "cutedsl" and supports_cutedsl:
@@ -171,6 +186,7 @@ def _log_gdn_backend_decision(
     chosen = {
         "flashinfer": "FlashInfer",
         "cutedsl": "CuteDSL",
+        "sm70_cuda": "SM70 CUDA GDN",
         "triton": "Triton/FLA",
     }[active_backend]
     logger.info_once(
@@ -257,6 +273,8 @@ class ChunkGatedDeltaRule(CustomOp):
             self._forward_method = self.forward_cuda
         elif active_backend == "cutedsl":
             self._forward_method = self.forward_cutedsl
+        elif active_backend == "sm70_cuda":
+            self._forward_method = self.forward_sm70_cuda
         else:
             self._forward_method = self.forward_native
 
@@ -321,6 +339,50 @@ class ChunkGatedDeltaRule(CustomOp):
             use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
             core_attn_out=core_attn_out,
         )
+
+    def forward_sm70_cuda(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: torch.Tensor,
+        output_final_state: bool,
+        cu_seqlens: torch.Tensor | None = None,
+        chunk_indices: torch.Tensor | None = None,
+        chunk_offsets: torch.Tensor | None = None,
+        use_qk_l2norm_in_kernel: bool = True,
+        core_attn_out: torch.Tensor | None = None,
+    ):
+        """SM70 (V100) GDN prefill via custom CUDA kernel.
+
+        The FLA Triton kernel does not work on SM70 (fp16 precision issues).
+        This uses a dedicated CUDA kernel with explicit fp32 accumulation.
+        """
+        from vllm.model_executor.layers.mamba.gdn.sm70_gdn import (
+            chunk_gated_delta_rule_sm70,
+        )
+
+        o, final_state = chunk_gated_delta_rule_sm70(
+            q=q,
+            k=k,
+            v=v,
+            g=g,
+            beta=beta,
+            initial_state=initial_state,
+            output_final_state=output_final_state,
+            cu_seqlens=cu_seqlens,
+            # L2-norm is already applied by fused_post_conv_prep in the
+            # prefill path; do NOT re-apply inside the kernel.
+            use_qk_l2norm_in_kernel=False,
+            core_attn_out=core_attn_out,
+        )
+        if core_attn_out is not None:
+            o_flat = o.squeeze(0).reshape(-1)
+            co_flat = core_attn_out.reshape(-1)
+            co_flat[: o_flat.numel()].copy_(o_flat)
+        return o, final_state
 
     def forward_cutedsl(
         self,

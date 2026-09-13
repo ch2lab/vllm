@@ -191,6 +191,9 @@ if TYPE_CHECKING:
     VLLM_HUMMING_MOE_GEMM_TYPE: Literal["indexed", "grouped", "auto"] | None = None
     VLLM_B12X_MOE_FP4_FORCE_A16: bool = False
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
+    VLLM_SM70_NVFP4: bool = False
+    VLLM_SM70_NVFP4_KV: bool = False
+    VLLM_SM70_FLASHINFER_ATTN: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
@@ -1534,6 +1537,24 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # https://github.com/deepseek-ai/DeepEP/pull/341
     "VLLM_DEEPEPLL_NVFP4_DISPATCH": lambda: bool(
         int(os.getenv("VLLM_DEEPEPLL_NVFP4_DISPATCH", "0"))
+    ),
+    # SM70 (Volta V100) Marlin NVFP4 GEMM binding. Gates the SM70-only
+    # NVFP4 GEMM op (see vllm.sm70_nvfp4_ops); only effective on exact SM70.
+    "VLLM_SM70_NVFP4": lambda: bool(int(os.getenv("VLLM_SM70_NVFP4", "0"))),
+    # SM70 (Volta V100) NVFP4 KV-cache store path. Gated: when enabled on an
+    # SM70 (family 70) device, the FlashInfer backend enables the NVFP4 KV-cache
+    # store/selection path (BF16/FP16 query+output, uint8 packed KV).  Off by
+    # default so the backend is byte-identical to upstream unless explicitly on.
+    "VLLM_SM70_NVFP4_KV": lambda: bool(
+        int(os.getenv("VLLM_SM70_NVFP4_KV", "0"))
+    ),
+    # SM70 (Volta V100) native FlashInfer paged attention (16-bit decode+prefill).
+    # When enabled on an SM70 (family 70) device, the FlashInfer backend becomes
+    # selectable (its supports_compute_capability floor is normally SM80+). Off by
+    # default so backend selection is byte-identical to upstream unless explicitly
+    # turned on.
+    "VLLM_SM70_FLASHINFER_ATTN": lambda: bool(
+        int(os.getenv("VLLM_SM70_FLASHINFER_ATTN", "0"))
     ),
     # Whether to turn on the outlines cache for V1
     # This cache is unbounded and on disk, so it's not safe to use in
