@@ -8022,3 +8022,194 @@ void fp8_moe_single_token_router_sm70_out(
   #endif  // defined(VLLM_ENABLE_SM70_TURBOMIND_EXPERIMENTAL_MOE)
 
 #endif  // defined(ENABLE_SM70_TURBOMIND)
+constexpr int kAwqPrefillDequantThreads = 256;
+constexpr int kAwqQuantValuesPerWord = 8;
+constexpr int kAwqOutputColumnsPerTile = 32;
+
+__device__ __forceinline__ int awq_prefill_physical_nibble(int logical_k) {
+  // TurboMind's SM70 converter stores each logical K8 fragment as
+  // [0, 2, 4, 6, 1, 3, 5, 7].
+  return ((logical_k & 1) << 2) + (logical_k >> 1);
+}
+
+__global__ void awq_sm70_dequantize_kernel(
+    __half* __restrict__ output, const int32_t* __restrict__ packed_weight,
+    const int32_t* __restrict__ packed_scales, int k, int n, int group_size) {
+  const int64_t word_index =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t word_count = static_cast<int64_t>(k) * n / 8;
+  if (word_index >= word_count) {
+    return;
+  }
+
+  const int words_per_n_tile = k / kAwqQuantValuesPerWord;
+  const int n_in_tile = static_cast<int>(word_index % kAwqOutputColumnsPerTile);
+  const int64_t tile_word = word_index / kAwqOutputColumnsPerTile;
+  const int k_word = static_cast<int>(tile_word % words_per_n_tile);
+  const int n_tile = static_cast<int>(tile_word / words_per_n_tile);
+  const int col = n_tile * kAwqOutputColumnsPerTile + n_in_tile;
+  const int k_base = k_word * kAwqQuantValuesPerWord;
+  const int group = k_base / group_size;
+
+  const uint32_t quant = static_cast<uint32_t>(packed_weight[word_index]);
+  const uint32_t stats_bits =
+      static_cast<uint32_t>(packed_scales[group * n + col]);
+  const __half2 stats = *reinterpret_cast<const __half2*>(&stats_bits);
+  const __half scale = __low2half(stats);
+  const __half bias = __high2half(stats);
+
+#pragma unroll
+  for (int logical_k = 0; logical_k < kAwqQuantValuesPerWord; ++logical_k) {
+    const int shift = awq_prefill_physical_nibble(logical_k) * 4;
+    const int value = static_cast<int>((quant >> shift) & 0xfu);
+    output[static_cast<int64_t>(k_base + logical_k) * n + col] =
+        __hfma(__int2half_rn(value), scale, bias);
+  }
+}
+
+void awq_sm70_dequantize_out(torch::Tensor output, torch::Tensor packed_weight,
+                             torch::Tensor packed_scales, int64_t group_size) {
+  TORCH_CHECK(
+      output.is_cuda() && packed_weight.is_cuda() && packed_scales.is_cuda(),
+      "SM70 AWQ prefill dequant expects CUDA tensors.");
+  TORCH_CHECK(output.scalar_type() == torch::kFloat16 &&
+                  packed_weight.scalar_type() == torch::kInt32 &&
+                  packed_scales.scalar_type() == torch::kInt32,
+              "SM70 AWQ prefill dequant dtype mismatch.");
+  TORCH_CHECK(
+      output.dim() == 2 && packed_weight.dim() == 2 && packed_scales.dim() == 2,
+      "SM70 AWQ prefill dequant expects rank-2 tensors.");
+  TORCH_CHECK(output.is_contiguous() && packed_weight.is_contiguous() &&
+                  packed_scales.is_contiguous(),
+              "SM70 AWQ prefill dequant expects contiguous tensors.");
+  TORCH_CHECK(group_size == 128,
+              "SM70 AWQ prefill dequant requires group_size=128.");
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
+  const int64_t k = output.size(0);
+  const int64_t n = output.size(1);
+  TORCH_CHECK(k % group_size == 0 && k % kAwqQuantValuesPerWord == 0 &&
+                  n % kAwqOutputColumnsPerTile == 0,
+              "SM70 AWQ prefill dequant shape alignment mismatch.");
+  TORCH_CHECK(packed_weight.numel() == k * n / 8,
+              "SM70 AWQ prefill packed-weight shape mismatch.");
+  TORCH_CHECK(
+      packed_scales.size(0) == k / group_size && packed_scales.size(1) == n,
+      "SM70 AWQ prefill packed-scale shape mismatch.");
+  TORCH_CHECK(output.device() == packed_weight.device() &&
+                  output.device() == packed_scales.device(),
+              "SM70 AWQ prefill tensors must share a device.");
+
+  const int64_t words = packed_weight.numel();
+  const int blocks = static_cast<int>((words + kAwqPrefillDequantThreads - 1) /
+                                      kAwqPrefillDequantThreads);
+  awq_sm70_dequantize_kernel<<<blocks, kAwqPrefillDequantThreads, 0,
+                               at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<__half*>(output.data_ptr<at::Half>()),
+      packed_weight.data_ptr<int32_t>(), packed_scales.data_ptr<int32_t>(),
+      static_cast<int>(k), static_cast<int>(n), static_cast<int>(group_size));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+constexpr int kFp8PrefillDequantThreads = 256;
+constexpr int kFp8QuantValuesPerWord = 8;
+constexpr int kFp8OutputColumnsPerTile = 32;
+
+__global__ void fp8_sm70_dequantize_kernel(
+    __half* __restrict__ output, const uint8_t* __restrict__ packed_weight,
+    const __half* __restrict__ packed_scales, int k, int n, int group_size) {
+  const int64_t word_index =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t word_count =
+      static_cast<int64_t>(k) * n / kFp8QuantValuesPerWord;
+  if (word_index >= word_count) {
+    return;
+  }
+
+  const int words_per_n_tile = k / kFp8QuantValuesPerWord;
+  const int n_in_tile =
+      static_cast<int>(word_index % kFp8OutputColumnsPerTile);
+  const int64_t tile_word = word_index / kFp8OutputColumnsPerTile;
+  const int k_word = static_cast<int>(tile_word % words_per_n_tile);
+  const int n_tile = static_cast<int>(tile_word / words_per_n_tile);
+  const int col = n_tile * kFp8OutputColumnsPerTile + n_in_tile;
+  const int k_base = k_word * kFp8QuantValuesPerWord;
+  const int group = k_base / group_size;
+
+  const uint2 quant = reinterpret_cast<const uint2*>(packed_weight)[word_index];
+  const auto& quant_lo = reinterpret_cast<
+      const turbomind::Array<turbomind::fp8_e4m3_t, 4>&>(quant.x);
+  const auto& quant_hi = reinterpret_cast<
+      const turbomind::Array<turbomind::fp8_e4m3_t, 4>&>(quant.y);
+  const auto half_lo = turbomind::cvt_f16x4_e4m3(quant_lo);
+  const auto half_hi = turbomind::cvt_f16x4_e4m3(quant_hi);
+  const __half scale = packed_scales[static_cast<int64_t>(group) * n + col];
+
+  // cvt_f16x4_e4m3 reverses the converter's physical [0, 2, 1, 3]
+  // byte order and returns each logical K4 in-order.
+  output[static_cast<int64_t>(k_base + 0) * n + col] =
+      __hmul(half_lo[0], scale);
+  output[static_cast<int64_t>(k_base + 1) * n + col] =
+      __hmul(half_lo[1], scale);
+  output[static_cast<int64_t>(k_base + 2) * n + col] =
+      __hmul(half_lo[2], scale);
+  output[static_cast<int64_t>(k_base + 3) * n + col] =
+      __hmul(half_lo[3], scale);
+  output[static_cast<int64_t>(k_base + 4) * n + col] =
+      __hmul(half_hi[0], scale);
+  output[static_cast<int64_t>(k_base + 5) * n + col] =
+      __hmul(half_hi[1], scale);
+  output[static_cast<int64_t>(k_base + 6) * n + col] =
+      __hmul(half_hi[2], scale);
+  output[static_cast<int64_t>(k_base + 7) * n + col] =
+      __hmul(half_hi[3], scale);
+}
+
+void fp8_sm70_dequantize_out(torch::Tensor output,
+                             torch::Tensor packed_weight,
+                             torch::Tensor packed_scales,
+                             int64_t group_size) {
+  TORCH_CHECK(
+      output.is_cuda() && packed_weight.is_cuda() && packed_scales.is_cuda(),
+      "SM70 FP8 prefill dequant expects CUDA tensors.");
+  TORCH_CHECK(output.scalar_type() == torch::kFloat16 &&
+                  packed_weight.scalar_type() == torch::kUInt8 &&
+                  packed_scales.scalar_type() == torch::kFloat16,
+              "SM70 FP8 prefill dequant dtype mismatch.");
+  TORCH_CHECK(
+      output.dim() == 2 && packed_weight.dim() == 2 && packed_scales.dim() == 2,
+      "SM70 FP8 prefill dequant expects rank-2 tensors.");
+  TORCH_CHECK(output.is_contiguous() && packed_weight.is_contiguous() &&
+                  packed_scales.is_contiguous(),
+              "SM70 FP8 prefill dequant expects contiguous tensors.");
+  TORCH_CHECK(group_size == 128,
+              "SM70 FP8 prefill dequant requires group_size=128.");
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
+  const int64_t k = output.size(0);
+  const int64_t n = output.size(1);
+  TORCH_CHECK(k % group_size == 0 &&
+                  k % kFp8QuantValuesPerWord == 0 &&
+                  n % kFp8OutputColumnsPerTile == 0,
+              "SM70 FP8 prefill dequant shape alignment mismatch.");
+  TORCH_CHECK(packed_weight.numel() == k * n,
+              "SM70 FP8 prefill packed-weight shape mismatch.");
+  TORCH_CHECK(
+      packed_scales.size(0) == k / group_size && packed_scales.size(1) == n,
+      "SM70 FP8 prefill packed-scale shape mismatch.");
+  TORCH_CHECK(output.device() == packed_weight.device() &&
+                  output.device() == packed_scales.device(),
+              "SM70 FP8 prefill tensors must share a device.");
+
+  const int64_t words = packed_weight.numel() / kFp8QuantValuesPerWord;
+  const int blocks = static_cast<int>(
+      (words + kFp8PrefillDequantThreads - 1) / kFp8PrefillDequantThreads);
+  fp8_sm70_dequantize_kernel<<<blocks, kFp8PrefillDequantThreads, 0,
+                               at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<__half*>(output.data_ptr<at::Half>()),
+      packed_weight.data_ptr<uint8_t>(),
+      reinterpret_cast<const __half*>(packed_scales.data_ptr<at::Half>()),
+      static_cast<int>(k), static_cast<int>(n),
+      static_cast<int>(group_size));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}

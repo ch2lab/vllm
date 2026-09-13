@@ -29,6 +29,48 @@ import torch.nn as nn
 
 import vllm.envs as envs
 from vllm.compilation.counter import compilation_counter
+
+# SM70 host-side step timing (gated by VLLM_SM70_STEPTIME=1). Measures which
+# section of the decode step cycle (gather/dispatch, input-prep, graph
+# launch, sampling) dominates the inter-step host work.
+import os as _os
+_SM70_STEPTIME = int(_os.environ.get("VLLM_SM70_STEPTIME", "0"))
+_SM70_STEPFILE = _os.environ.get("VLLM_SM70_STEPTIME_FILE", "/tmp/sm70_step.csv")
+_sm70_step = 0
+_sm70_pid = _os.getpid()
+_sm70_exec: dict[int, dict] = {}
+try:
+    with open("/tmp/sm70_import_marker.txt", "a") as _sm70_f:
+        _sm70_f.write(
+            f"pid={_sm70_pid} STEPTIME={_SM70_STEPTIME} "
+            f"env={_os.environ.get('VLLM_SM70_STEPTIME','UNSET')} "
+            f"file={_SM70_STEPFILE}\n"
+        )
+except OSError:
+    pass
+
+
+def _sm70_log_step(step: int, rec: dict, ntok: int) -> None:
+    if ntok > 8:
+        return  # prefill/chunked, not steady decode
+    def ms(a, b):
+        return (b - a) * 1e3 if (a is not None and b is not None) else -1.0
+    e = rec.get("exec") or {}
+    row = (
+        f"{_sm70_pid},{step},{ntok},"
+        f"{ms(e.get('entry'), e.get('exit')):.2f},"
+        f"{ms(e.get('entry'), e.get('dispatch')):.2f},"
+        f"{ms(e.get('dispatch'), e.get('prepare')):.2f},"
+        f"{ms(e.get('prepare'), e.get('graph')):.2f},"
+        f"{ms(e.get('graph'), e.get('exit')):.2f},"
+        f"{ms(rec.get('s_entry'), rec.get('s_exit')):.2f}\n"
+    )
+    try:
+        with open(_SM70_STEPFILE, "a") as fh:
+            fh.write(row)
+    except OSError:
+        pass
+
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import (
@@ -1335,6 +1377,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         input_batch: InputBatch,
         grammar_output: GrammarOutput | None,
     ) -> tuple[SamplerOutput, torch.Tensor, torch.Tensor]:
+        _sm70_srec: dict = {}
+        if _SM70_STEPTIME:
+            _sm70_srec["s_entry"] = time.perf_counter()
+            try:
+                with open("/tmp/sm70_sample_entry.txt", "a") as _sm70_ef:
+                    _sm70_ef.write(
+                        f"pid={_sm70_pid} step={_sm70_step} "
+                        f"nhs={hidden_states.shape[0]} "
+                        f"nb={input_batch.num_reqs}\n"
+                    )
+            except OSError:
+                pass
         sample_hidden_states = hidden_states[input_batch.logits_indices]
         logits = self.model.compute_logits(sample_hidden_states)
         if grammar_output is not None:
@@ -1360,6 +1414,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # Draft logits are needed for probabilistic rejection sampling.
                 self.speculator.draft_logits,
             )
+        if _SM70_STEPTIME:
+            _sm70_srec["s_exit"] = time.perf_counter()
+            _sm70_srec["exec"] = _sm70_exec.get(_sm70_step)
+            _sm70_log_step(_sm70_step, _sm70_srec, ntok=hidden_states.shape[0])
 
         return sampler_output, sampler_output.num_sampled, sampler_output.num_rejected
 
@@ -1413,6 +1471,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         is_profile: bool = False,
         context_len: int = 0,
     ) -> ModelRunnerOutput | IntermediateTensors | None:
+        global _sm70_step
+        _sm70_rec: dict = {}
+        if _SM70_STEPTIME and not dummy_run:
+            _sm70_step += 1
+            _sm70_rec["entry"] = time.perf_counter()
         if not dummy_run:
             # Update the request states.
             self.update_pp_decode_requests()
@@ -1463,6 +1526,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             need_eager=is_profile or skip_compiled,
             num_active_loras=num_active_loras,
         )
+        if _SM70_STEPTIME:
+            _sm70_rec["dispatch"] = time.perf_counter()
 
         if batch_desc.num_tokens == 0:
             # All DP ranks have zero tokens to run.
@@ -1487,6 +1552,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.kv_cache_config,
                 self.req_states.num_computed_tokens.gpu,
             )
+            if _SM70_STEPTIME:
+                _sm70_rec["prepare"] = time.perf_counter()
 
             if self.lora_config:
                 # Activate LoRA adapters.
@@ -1626,6 +1693,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             assert self.cudagraph_manager is not None
             self.kv_connector.pre_forward(scheduler_output)
             model_output = self.cudagraph_manager.run_fullgraph(batch_desc)
+            if _SM70_STEPTIME:
+                _sm70_rec["graph"] = time.perf_counter()
         else:
             # For piecewise and eager mode, just call model().
             batch_descriptor = BatchDescriptor(
@@ -1689,6 +1758,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             ec_connector_output=ec_connector_output,
             routed_experts=routed_experts,
         )
+
+        if _SM70_STEPTIME and _sm70_rec:
+            _sm70_rec["exit"] = time.perf_counter()
+            _sm70_exec[_sm70_step] = _sm70_rec
 
         if not self.is_last_pp_rank:
             # Non-last PP rank: return IntermediateTensors for sending.

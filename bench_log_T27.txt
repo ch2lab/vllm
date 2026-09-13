@@ -1,0 +1,389 @@
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:345] 
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:345]        █     █     █▄   ▄█
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:345]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.26.1rc1.dev126+g7fdc31505.d20260801
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:345]   █▄█▀ █     █     █     █  model   /data/models/Qwen3.6-35B-A3B-AWQ
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:345]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:345] 
+(APIServer pid=1008960) INFO 08-01 22:18:39 [api_utils.py:273] non-default args: {'port': 8199, 'model': '/data/models/Qwen3.6-35B-A3B-AWQ', 'max_model_len': 32768, 'tensor_parallel_size': 2, 'kv_cache_dtype': 'int4_per_token_head', 'language_model_only': True}
+(APIServer pid=1008960) INFO 08-01 22:18:39 [model.py:638] Resolved architecture: Qwen3_5MoeForConditionalGeneration
+(APIServer pid=1008960) INFO 08-01 22:18:39 [model.py:1875] Using max model len 32768
+(APIServer pid=1008960) INFO 08-01 22:18:41 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+(APIServer pid=1008960) INFO 08-01 22:18:41 [model.py:834] Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled. Attention backends without mm_prefix support may now be selected.
+(APIServer pid=1008960) INFO 08-01 22:18:41 [cache.py:289] Using int4_per_token_head data type to store kv cache. It reduces the GPU memory footprint and boosts the performance. Dynamic per-token-head scales will be computed at runtime.
+(APIServer pid=1008960) INFO 08-01 22:18:41 [vllm.py:1118] Asynchronous scheduling is enabled.
+(APIServer pid=1008960) INFO 08-01 22:18:41 [cuda.py:323] SM70 detected: auto-setting cudagraph_mode=FULL_DECODE_ONLY
+(APIServer pid=1008960) INFO 08-01 22:18:41 [cuda.py:328] SM70 detected: auto-setting compilation mode=NONE (torch.compile not beneficial on Volta)
+(APIServer pid=1008960) INFO 08-01 22:18:41 [cuda.py:334] SM70 detected: capping max_cudagraph_capture_size=64 to conserve GPU memory on Volta
+(APIServer pid=1008960) INFO 08-01 22:18:41 [kernel.py:306] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(APIServer pid=1008960) INFO 08-01 22:18:41 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+(EngineCore pid=1009269) INFO 08-01 22:18:55 [core.py:121] Initializing a V1 LLM engine (v0.26.1rc1.dev126+g7fdc31505.d20260801) with config: model='/data/models/Qwen3.6-35B-A3B-AWQ', speculative_config=None, tokenizer='/data/models/Qwen3.6-35B-A3B-AWQ', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=32768, download_dir=None, load_format=auto, tensor_parallel_size=2, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=auto_awq, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=int4_per_token_head, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/data/models/Qwen3.6-35B-A3B-AWQ, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_DECODE_ONLY: (2, 0)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 64, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=1009269) WARNING 08-01 22:18:55 [multiproc_executor.py:1081] Reducing Torch parallelism from 22 threads to 1 to avoid unnecessary CPU contention. Set OMP_NUM_THREADS in the external environment to tune this value as needed.
+(EngineCore pid=1009269) INFO 08-01 22:18:55 [multiproc_executor.py:140] DP group leader: node_rank=0, node_rank_within_dp=0, master_addr=127.0.0.1, mq_connect_ip=192.168.8.178 (local), world_size=2, local_world_size=2
+INFO 08-01 22:19:06 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+(Worker pid=1009527) INFO 08-01 22:19:06 [parallel_state.py:1640] world_size=2 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:37855 backend=nccl
+INFO 08-01 22:19:06 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+(Worker pid=1009528) INFO 08-01 22:19:06 [parallel_state.py:1640] world_size=2 rank=1 local_rank=1 distributed_init_method=tcp://127.0.0.1:37855 backend=nccl
+(Worker pid=1009527) INFO 08-01 22:19:08 [pynccl.py:113] vLLM is using nccl==2.28.9
+(Worker pid=1009527) WARNING 08-01 22:19:08 [symm_mem.py:67] SymmMemCommunicator: Device capability 7.0 not supported, communicator is not available.
+(Worker pid=1009528) WARNING 08-01 22:19:08 [symm_mem.py:67] SymmMemCommunicator: Device capability 7.0 not supported, communicator is not available.
+(Worker pid=1009527) INFO 08-01 22:19:08 [cuda_communicator.py:266] Using ['CUSTOM', 'PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'AITER_CUSTOM', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=1009527) INFO 08-01 22:19:08 [cuda_communicator.py:266] Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'ep:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'AITER_CUSTOM', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=1009527) INFO 08-01 22:19:08 [parallel_state.py:1977] rank 0 in world size 2 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank 0, EPLB rank N/A
+(Worker pid=1009527) WARNING 08-01 22:19:09 [topk_topp_sampler.py:62] FlashInfer top-p/top-k sampling unavailable: unsupported compute capability 7.0; falling back. Set VLLM_USE_FLASHINFER_SAMPLER=0 to silence.
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:09 [gpu_model_runner.py:5308] Starting to load model /data/models/Qwen3.6-35B-A3B-AWQ...
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:09 [fa_utils.py:265] Cannot use FA version 2 is not supported due to FA2 is only supported on devices with compute capability >= 8
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:09 [fa_utils.py:265] Cannot use FA version 2 is not supported due to FA2 is only supported on devices with compute capability >= 8
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:09 [mm_encoder_attention.py:373] Using AttentionBackendEnum.TORCH_SDPA for MMEncoderAttention.
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:09 [qwen_gdn_linear_attn.py:157] Using Triton/FLA GDN prefill kernel (requested=auto, head_k_dim=128).
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:09 [unquantized.py:304] Using TRITON Unquantized MoE backend out of potential backends: ['FlashInfer TRTLLM', 'FlashInfer CUTLASS', 'TRITON', 'BATCHED_TRITON'].
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:09 [int_wna16.py:266] Using 'EMULATION' WNA16 MoE backend.
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:09 [cuda.py:514] Using SM70_WMMA_ATTN attention backend out of potential backends: ['SM70_WMMA_ATTN', 'TRITON_ATTN'].
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:10 [weight_utils.py:867] Filesystem type for checkpoints: EXT4. Checkpoint size: 23.71 GiB. Available RAM: 86.26 GiB.
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:10 [weight_utils.py:890] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:   0% Completed | 0/9 [00:00<?, ?it/s]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  11% Completed | 1/9 [00:02<00:16,  2.08s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  22% Completed | 2/9 [00:07<00:26,  3.84s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  33% Completed | 3/9 [00:12<00:26,  4.37s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  44% Completed | 4/9 [00:17<00:23,  4.69s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  56% Completed | 5/9 [00:22<00:19,  4.83s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  67% Completed | 6/9 [00:27<00:14,  4.94s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  78% Completed | 7/9 [00:32<00:10,  5.02s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards:  89% Completed | 8/9 [00:33<00:03,  3.71s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards: 100% Completed | 9/9 [00:34<00:00,  2.77s/it]
+(Worker_TP0 pid=1009527) Loading safetensors checkpoint shards: 100% Completed | 9/9 [00:34<00:00,  3.82s/it]
+(Worker_TP0 pid=1009527) 
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:44 [default_loader.py:430] Loading weights took 34.36 seconds
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:44 [unquantized.py:383] Using MoEPrepareAndFinalizeNoDPEPModular
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:44 [unquantized.py:384] Using TritonExperts MoE backend
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:44 [int_wna16.py:378] Using MoEPrepareAndFinalizeNoDPEPModular
+(Worker_TP0 pid=1009527) INFO 08-01 22:19:44 [int_wna16.py:379] Using Int4EmulationTritonExperts
+(Worker_TP0 pid=1009527) WARNING 08-01 22:19:44 [int4_emulation_moe.py:44] Using Int4EmulationTritonExperts MoE backend. Int4 weights are dequantized to BF16 at load time 
+[rank0]:[W801 22:19:45.051209520 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 374341632, total: 34072559616).
+[rank1]:[W801 22:19:45.059497581 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 374341632, total: 34072559616).
+[rank0]:[W801 22:19:45.088983560 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 105906176, total: 34072559616).
+[rank1]:[W801 22:19:45.106855917 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 105906176, total: 34072559616).
+[rank0]:[W801 22:19:45.124452174 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 84934656, total: 34072559616).
+[rank0]:[W801 22:19:45.143728425 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 84934656, total: 34072559616).
+[rank1]:[W801 22:19:45.143933221 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 84934656, total: 34072559616).
+[rank0]:[W801 22:19:45.176489975 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 84934656, total: 34072559616).
+[rank1]:[W801 22:19:45.177063113 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 84934656, total: 34072559616).
+[rank0]:[W801 22:19:45.207983460 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 84934656, total: 34072559616).
+[rank1]:[W801 22:19:45.223767263 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 84934656, total: 34072559616).
+[rank0]:[W801 22:19:45.239060892 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 84934656, total: 34072559616).
+[rank1]:[W801 22:19:45.239800220 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 84934656, total: 34072559616).
+[rank1]:[W801 22:19:45.286397306 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 84934656, total: 34072559616).
+[rank0]:[W801 22:19:45.287696730 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1073741824 bytes (free: 890241024, total: 34072559616).
+[rank1]:[W801 22:19:45.349636430 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 1073741824 bytes (free: 890241024, total: 34072559616).
+[rank0]:[W801 22:19:45.382980710 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank0]:[W801 22:19:45.400040184 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank1]:[W801 22:19:45.400904623 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank0]:[W801 22:19:45.432425543 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank1]:[W801 22:19:45.433471224 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank0]:[W801 22:19:45.458366256 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank1]:[W801 22:19:45.459055490 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank1]:[W801 22:19:45.492500918 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 332398592, total: 34072559616).
+[rank0]:[W801 22:19:45.492827492 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 63963136, total: 34072559616).
+[rank0]:[W801 22:19:45.510430042 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 63963136, total: 34072559616).
+[rank1]:[W801 22:19:45.541224559 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 63963136, total: 34072559616).
+[rank0]:[W801 22:19:45.558775240 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:45.559401035 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 63963136, total: 34072559616).
+[rank0]:[W801 22:19:45.591997968 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 42991616, total: 34072559616).
+[rank0]:[W801 22:19:45.608978903 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:45.609359702 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:45.627087824 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 42991616, total: 34072559616).
+[rank0]:[W801 22:19:45.659590375 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:45.674838768 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 42991616, total: 34072559616).
+[rank0]:[W801 22:19:45.677323125 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:45.705971627 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 42991616, total: 34072559616).
+[rank0]:[W801 22:19:46.722472136 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:46.723615130 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 42991616, total: 34072559616).
+[rank1]:[W801 22:19:46.757822869 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 42991616, total: 34072559616).
+[rank0]:[W801 22:19:46.760043432 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1073741824 bytes (free: 848297984, total: 34072559616).
+[rank1]:[W801 22:19:46.822689710 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 1073741824 bytes (free: 848297984, total: 34072559616).
+[rank0]:[W801 22:19:46.856905632 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank0]:[W801 22:19:46.876118017 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank1]:[W801 22:19:46.877207608 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank0]:[W801 22:19:46.903279794 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank1]:[W801 22:19:46.904991383 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank1]:[W801 22:19:46.930687612 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank0]:[W801 22:19:46.930717119 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank1]:[W801 22:19:46.021138601 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 290455552, total: 34072559616).
+[rank0]:[W801 22:19:46.038404394 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.054999823 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.070464676 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.087586611 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.103825120 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.107159007 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.124429730 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 20971520 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.126484530 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.126962032 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.145676300 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.145673463 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.164790700 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.197538201 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.213030504 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.228775936 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.244604850 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.261802118 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank1]:[W801 22:19:46.263227993 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 22020096, total: 34072559616).
+[rank0]:[W801 22:19:46.309639215 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1073741824 bytes (free: 827326464, total: 34072559616).
+[rank1]:[W801 22:19:46.340406066 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 1073741824 bytes (free: 827326464, total: 34072559616).
+[rank0]:[W801 22:19:46.374618186 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.393423944 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.394934445 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.425393359 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.426960209 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.443246636 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.458559530 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.473395291 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.503567150 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.518994978 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.536627456 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.552823226 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.569879779 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 269484032, total: 34072559616).
+[rank1]:[W801 22:19:46.570620787 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 269484032, total: 34072559616).
+[rank0]:[W801 22:19:46.636123309 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1073741824 bytes (free: 1074790400, total: 34072559616).
+[rank1]:[W801 22:19:46.636198757 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 1073741824 bytes (free: 1074790400, total: 34072559616).
+[rank1]:[W801 22:19:46.692223440 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank0]:[W801 22:19:46.692402497 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank0]:[W801 22:19:46.713842364 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank1]:[W801 22:19:47.780166317 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank0]:[W801 22:19:47.812379176 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank1]:[W801 22:19:47.813295809 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank0]:[W801 22:19:47.829702150 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank1]:[W801 22:19:47.845285277 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 516947968, total: 34072559616).
+[rank0]:[W801 22:19:47.878184504 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 261095424, total: 34072559616).
+[rank1]:[W801 22:19:47.894814244 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 261095424, total: 34072559616).
+[rank0]:[W801 22:19:47.894915578 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 261095424, total: 34072559616).
+[rank1]:[W801 22:19:47.927503081 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 261095424, total: 34072559616).
+[rank0]:[W801 22:19:47.945801413 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 240123904, total: 34072559616).
+[rank0]:[W801 22:19:47.963989319 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 240123904, total: 34072559616).
+[rank1]:[W801 22:19:47.964319265 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 240123904, total: 34072559616).
+[rank1]:[W801 22:19:47.982723212 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 240123904, total: 34072559616).
+[rank0]:[W801 22:19:47.013364856 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 240123904, total: 34072559616).
+[rank1]:[W801 22:19:47.014302958 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 240123904, total: 34072559616).
+[rank0]:[W801 22:19:47.041299320 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 240123904, total: 34072559616).
+[rank1]:[W801 22:19:47.056940369 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 240123904, total: 34072559616).
+[rank0]:[W801 22:19:47.073358068 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 240123904, total: 34072559616).
+[rank1]:[W801 22:19:47.089901929 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 240123904, total: 34072559616).
+[rank0]:[W801 22:19:47.106689885 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 268435456 bytes (free: 240123904, total: 34072559616).
+[rank1]:[W801 22:19:47.107359172 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 268435456 bytes (free: 240123904, total: 34072559616).
+[rank0]:[W801 22:19:47.162546550 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1073741824 bytes (free: 1045430272, total: 34072559616).
+[rank1]:[W801 22:19:47.162578652 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 1073741824 bytes (free: 1045430272, total: 34072559616).
+[rank1]:[W801 22:19:47.202850683 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 487587840, total: 34072559616).
+[rank0]:[W801 22:19:47.202866309 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 487587840, total: 34072559616).
+[rank0]:[W801 22:19:47.230378731 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 487587840, total: 34072559616).
+[rank1]:[W801 22:19:47.231308273 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 487587840, total: 34072559616).
+[rank0]:[W801 22:19:47.263373269 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 487587840, total: 34072559616).
+[rank1]:[W801 22:19:47.264351699 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 487587840, total: 34072559616).
+[rank0]:[W801 22:19:47.275043949 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 256901120, total: 34072559616).
+[rank0]:[W801 22:19:47.275451714 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 256901120, total: 34072559616).
+[rank1]:[W801 22:19:47.284848466 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 256901120, total: 34072559616).
+[rank1]:[W801 22:19:47.285234540 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 1 while trying to allocate 536870912 bytes (free: 256901120, total: 34072559616).
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [gpu_model_runner.py:5403] Failed to load model - not enough GPU memory. Try lowering --gpu-memory-utilization to free memory for weights, increasing --tensor-parallel-size, or using --quantization. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/ for more tips. (original error: CUDA out of memory. Tried to allocate 512.00 MiB. GPU 0 has a total capacity of 31.73 GiB of which 245.00 MiB is free. Including non-PyTorch memory, this process has 31.49 GiB memory in use. Of the allocated memory 30.40 GiB is allocated by PyTorch, and 180.28 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf))
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 648, in __init__
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     self.worker.load_model()
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_worker.py", line 442, in load_model
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     self.model_runner.load_model(load_dummy_weights=load_dummy_weights)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_model_runner.py", line 5404, in load_model
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     raise e
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_model_runner.py", line 5324, in load_model
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     self.model = model_loader.load_model(
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                  ^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/base_loader.py", line 80, in load_model
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     process_weights_after_loading(model, model_config, target_device)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/utils.py", line 113, in process_weights_after_loading
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     quant_method.process_weights_after_loading(module)
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/quantization/auto_awq.py", line 670, in process_weights_after_loading
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     converted = convert_to_wna16_moe_kernel_format(
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/fused_moe/oracle/int_wna16.py", line 1587, in convert_to_wna16_moe_kernel_format
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return _process_weights_emulation_awq(
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/fused_moe/oracle/int_wna16.py", line 1347, in _process_weights_emulation_awq
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     w13_bf16 = _unpack_and_dequant_int4_awq(
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/fused_moe/oracle/int_wna16.py", line 1265, in _unpack_and_dequant_int4_awq
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     w_dequant = w.to(output_dtype) * scale_broadcast  # [E, K, N]
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                 ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+(Worker_TP0 pid=1009527) ERROR 08-01 22:19:48 [multiproc_executor.py:912] torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 512.00 MiB. GPU 0 has a total capacity of 31.73 GiB of which 245.00 MiB is free. Including non-PyTorch memory, this process has 31.49 GiB memory in use. Of the allocated memory 30.40 GiB is allocated by PyTorch, and 180.28 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+(EngineCore pid=1009269) INFO 08-01 22:19:48 [multiproc_executor.py:440] [shutdown] Executor: waiting for worker exit count=2
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [gpu_model_runner.py:5403] Failed to load model - not enough GPU memory. Try lowering --gpu-memory-utilization to free memory for weights, increasing --tensor-parallel-size, or using --quantization. See https://docs.vllm.ai/en/latest/configuration/conserving_memory/ for more tips. (original error: CUDA out of memory. Tried to allocate 512.00 MiB. GPU 1 has a total capacity of 31.73 GiB of which 245.00 MiB is free. Including non-PyTorch memory, this process has 31.49 GiB memory in use. Of the allocated memory 30.40 GiB is allocated by PyTorch, and 180.28 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf))
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 648, in __init__
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     self.worker.load_model()
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_worker.py", line 442, in load_model
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     self.model_runner.load_model(load_dummy_weights=load_dummy_weights)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_model_runner.py", line 5404, in load_model
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     raise e
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_model_runner.py", line 5324, in load_model
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     self.model = model_loader.load_model(
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                  ^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/base_loader.py", line 80, in load_model
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     process_weights_after_loading(model, model_config, target_device)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/utils.py", line 113, in process_weights_after_loading
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     quant_method.process_weights_after_loading(module)
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/quantization/auto_awq.py", line 670, in process_weights_after_loading
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     converted = convert_to_wna16_moe_kernel_format(
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/fused_moe/oracle/int_wna16.py", line 1587, in convert_to_wna16_moe_kernel_format
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     return _process_weights_emulation_awq(
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/fused_moe/oracle/int_wna16.py", line 1347, in _process_weights_emulation_awq
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     w13_bf16 = _unpack_and_dequant_int4_awq(
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/fused_moe/oracle/int_wna16.py", line 1265, in _unpack_and_dequant_int4_awq
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]     w_dequant = w.to(output_dtype) * scale_broadcast  # [E, K, N]
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912]                 ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+(Worker_TP1 pid=1009528) ERROR 08-01 22:19:48 [multiproc_executor.py:912] torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 512.00 MiB. GPU 1 has a total capacity of 31.73 GiB of which 245.00 MiB is free. Including non-PyTorch memory, this process has 31.49 GiB memory in use. Of the allocated memory 30.40 GiB is allocated by PyTorch, and 180.28 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[rank0]:[W801 22:19:49.944247673 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(EngineCore pid=1009269) INFO 08-01 22:19:50 [multiproc_executor.py:447] [shutdown] Executor: all workers exited gracefully
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349] EngineCore failed to start.
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349] Traceback (most recent call last):
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/engine/core.py", line 1318, in run_engine_core
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     return func(*args, **kwargs)
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/engine/core.py", line 1074, in __init__
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     super().__init__(
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/engine/core.py", line 132, in __init__
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     self.model_executor = executor_class(vllm_config)
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 108, in __init__
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     super().__init__(vllm_config)
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     return func(*args, **kwargs)
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/abstract.py", line 109, in __init__
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     self._init_executor()
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 201, in _init_executor
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     self.workers = WorkerProc.wait_for_ready(unready_workers)
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 776, in wait_for_ready
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349]     raise e from None
+(EngineCore pid=1009269) ERROR 08-01 22:19:50 [core.py:1349] Exception: WorkerProc initialization failed due to an exception in a background process. See stack trace for root cause.
+(EngineCore pid=1009269) Process EngineCore:
+(EngineCore pid=1009269) Traceback (most recent call last):
+(EngineCore pid=1009269)   File "/data/vllm-dev/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=1009269)     self.run()
+(EngineCore pid=1009269)   File "/data/vllm-dev/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=1009269)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/engine/core.py", line 1353, in run_engine_core
+(EngineCore pid=1009269)     raise e
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/engine/core.py", line 1318, in run_engine_core
+(EngineCore pid=1009269)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1009269)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1009269)     return func(*args, **kwargs)
+(EngineCore pid=1009269)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/engine/core.py", line 1074, in __init__
+(EngineCore pid=1009269)     super().__init__(
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/engine/core.py", line 132, in __init__
+(EngineCore pid=1009269)     self.model_executor = executor_class(vllm_config)
+(EngineCore pid=1009269)                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 108, in __init__
+(EngineCore pid=1009269)     super().__init__(vllm_config)
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1009269)     return func(*args, **kwargs)
+(EngineCore pid=1009269)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/executor/abstract.py", line 109, in __init__
+(EngineCore pid=1009269)     self._init_executor()
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 201, in _init_executor
+(EngineCore pid=1009269)     self.workers = WorkerProc.wait_for_ready(unready_workers)
+(EngineCore pid=1009269)                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1009269)   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 776, in wait_for_ready
+(EngineCore pid=1009269)     raise e from None
+(EngineCore pid=1009269) Exception: WorkerProc initialization failed due to an exception in a background process. See stack trace for root cause.
+(APIServer pid=1008960) Traceback (most recent call last):
+(APIServer pid=1008960)   File "<frozen runpy>", line 198, in _run_module_as_main
+(APIServer pid=1008960)   File "<frozen runpy>", line 88, in _run_code
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 802, in <module>
+(APIServer pid=1008960)     uvloop.run(run_server(args))
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=1008960)     return __asyncio.run(
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=1008960)     return runner.run(main)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=1008960)     return self._loop.run_until_complete(task)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=1008960)     return await main
+(APIServer pid=1008960)            ^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 762, in run_server
+(APIServer pid=1008960)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 776, in run_server_worker
+(APIServer pid=1008960)     async with build_async_engine_client(
+(APIServer pid=1008960)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=1008960)     return await anext(self.gen)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 132, in build_async_engine_client
+(APIServer pid=1008960)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=1008960)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=1008960)     return await anext(self.gen)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 168, in build_async_engine_client_from_engine_args
+(APIServer pid=1008960)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=1008960)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/async_llm.py", line 220, in from_vllm_config
+(APIServer pid=1008960)     return cls(
+(APIServer pid=1008960)            ^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/async_llm.py", line 149, in __init__
+(APIServer pid=1008960)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=1008960)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1008960)     return func(*args, **kwargs)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/core_client.py", line 139, in make_async_mp_client
+(APIServer pid=1008960)     return AsyncMPClient(*client_args)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1008960)     return func(*args, **kwargs)
+(APIServer pid=1008960)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/core_client.py", line 987, in __init__
+(APIServer pid=1008960)     super().__init__(
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/core_client.py", line 609, in __init__
+(APIServer pid=1008960)     with launch_core_engines(
+(APIServer pid=1008960)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1008960)   File "/data/vllm-dev/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=1008960)     next(self.gen)
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/utils.py", line 1195, in launch_core_engines
+(APIServer pid=1008960)     wait_for_engine_startup(
+(APIServer pid=1008960)   File "/data/src/vllm/vllm/v1/engine/utils.py", line 1254, in wait_for_engine_startup
+(APIServer pid=1008960)     raise RuntimeError(
+(APIServer pid=1008960) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+/data/vllm-dev/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

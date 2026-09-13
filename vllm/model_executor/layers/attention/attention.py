@@ -200,9 +200,18 @@ def _init_kv_cache_quant(
                 CompressedTensorsKVCacheMethod,
             )
 
-            if not isinstance(quant_method, CompressedTensorsKVCacheMethod) or (
-                cast(CompressedTensorsConfig, quant_method.quant_config).kv_cache_scheme
-                is not None
+            # SM70 branch: the custom WMMA attention backend quantizes KV to
+            # e5m2 itself using the loaded k/v scales, so allow the combo.
+            sm70_ok = (
+                current_platform.is_cuda()
+                and current_platform.has_device_capability(70)
+                and not current_platform.has_device_capability(80)
+            )
+            if not sm70_ok and (
+                not isinstance(quant_method, CompressedTensorsKVCacheMethod) or (
+                    cast(CompressedTensorsConfig, quant_method.quant_config).kv_cache_scheme
+                    is not None
+                )
             ):
                 raise ValueError(
                     "fp8_e5m2 kv-cache is not supported with fp8 checkpoints."

@@ -266,6 +266,13 @@ class CustomAllreduce {
     size /= d;
     auto bytes = size * sizeof(typename packed_t<T>::P);
     int blocks = std::min(block_limit, (size + threads - 1) / threads);
+    // SM70 TP2 small-allreduce: use a single block for tensors ≤ 40 KB
+    // to eliminate cross-block spin overhead. The 1-block kernel saturates
+    // memory bandwidth for these sizes on V100.
+    if (custom_allreduce_sm70_tp2_small(world_size_, bytes)) {
+      block_limit = 1;
+      blocks = 1;
+    }
 
     // Check environment variable once
     const char* env_algo = std::getenv("VLLM_CUSTOM_ALLREDUCE_ALGO");

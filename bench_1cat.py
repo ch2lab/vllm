@@ -1,5 +1,8 @@
 """1Cat benchmark: Qwen3.6-27B-AWQ TP2 MTP4, matching our test_run.py config."""
 import sys, os
+# TP2 must run on the NVLink pair (GPU0<->1 has no NVLink; custom AR P2P
+# deadlocks over the PCIe host bridge). GPU1<->2 is NV6.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1,2")
 # Remove script dir from path to avoid importing our local vllm
 sys.path = [p for p in sys.path if not p.startswith('/data/src')]
 os.chdir('/data/models')

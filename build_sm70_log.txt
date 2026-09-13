@@ -1,0 +1,304 @@
+=== Building target: _C_stable_libtorch ===
+ninja: Entering directory `build-sm70'
+[0/1] Re-running CMake...
+-- Build type: Release
+-- Target device: cuda
+-- Found python matching: /data/vllm-dev/bin/python.
+-- Found CUDAToolkit: /usr/local/cuda/include (found version "12.8.93")
+-- PyTorch: CUDA detected: 12.8
+-- PyTorch: CUDA nvcc is: /usr/local/cuda/bin/nvcc
+-- PyTorch: CUDA toolkit directory: /usr/local/cuda
+-- PyTorch: Header version is: 12.8
+-- Found Python: /data/vllm-dev/bin/python (found version "3.12.13") found components: Interpreter
+-- /usr/local/cuda/lib64/libnvrtc.so shorthash is 2bb82d1a
+-- USE_CUDNN is set to 0. Compiling without cuDNN support
+-- USE_CUSPARSELT is set to 0. Compiling without cuSPARSELt support
+-- USE_CUDSS is set to 0. Compiling without cuDSS support
+-- USE_CUFILE is set to 0. Compiling without cuFile support
+CMake Warning at /data/vllm-dev/lib/python3.12/site-packages/torch/share/cmake/Caffe2/public/cuda.cmake:332 (message):
+  pytorch is not compatible with `CMAKE_CUDA_ARCHITECTURES` and will ignore
+  its value.  Please configure `TORCH_CUDA_ARCH_LIST` instead.
+Call Stack (most recent call first):
+  /data/vllm-dev/lib/python3.12/site-packages/torch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)
+  /data/vllm-dev/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:62 (find_package)
+  CMakeLists.txt:112 (find_package)
+
+
+-- Added CUDA NVCC flags for: -gencode;arch=compute_70,code=sm_70
+CMake Warning at /data/vllm-dev/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:22 (message):
+  library kineto not found.
+Call Stack (most recent call first):
+  /data/vllm-dev/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:119 (append_torchlib_if_found)
+  CMakeLists.txt:112 (find_package)
+
+
+-- CUDA target architectures: 7.0
+-- CUDA supported target architectures: 7.0
+-- FetchContent base directory: /data/src/vllm/.deps
+-- Enabling cumem allocator extension.
+patching file torch/csrc/stable/stableivalue_conversions.h
+-- CMake Version: 4.4.0
+-- CUTLASS 4.4.2
+-- Found CUDAToolkit: /usr/local/cuda/targets/x86_64-linux/include (found version "12.8.93")
+-- CUDART: /usr/local/cuda/lib64/libcudart.so
+-- CUDA Driver: /usr/local/cuda/lib64/stubs/libcuda.so
+-- NVRTC: /usr/local/cuda/lib64/libnvrtc.so
+-- Default Install Location: install
+-- CUDA Compilation Architectures: 70;72;75;80;86;87;89;90;90a;100;100a;120;120a;121;121a;101;101a
+-- Enable caching of reference results in conv unit tests
+-- Enable rigorous conv problem sizes in conv unit tests
+-- Grid Dependency Control (GDC) is enabled for SM100 kernels (required for programmatic dependent launches).
+-- Using the following NVCC flags: 
+  --expt-relaxed-constexpr
+  -ftemplate-backtrace-limit=0
+  -DCUTLASS_TEST_LEVEL=0
+  -DCUTLASS_TEST_ENABLE_CACHED_RESULTS=1
+  -DCUTLASS_CONV_UNIT_TEST_RIGOROUS_SIZE_ENABLED=1
+  -DCUTLASS_DEBUG_TRACE_LEVEL=0
+  -Xcompiler=-Wconversion
+  -Xcompiler=-fno-strict-aliasing
+-- Configuring cublas ...
+-- cuBLAS Disabled.
+-- Configuring cuBLAS ... done.
+-- Not building Machete kernels as no compatible archs found in CUDA target architectures
+-- Not building Marlin kernels as no compatible archs found in CUDA target architectures
+-- Not building dsv3_fused_a_gemm as no compatible archs found in CUDA target architectures.
+-- Not building fp32_router_gemm as no compatible archs found (requires SM90+ and CUDA >= 12.0).
+-- Not building AllSpark kernels as no compatible archs found in CUDA target architectures
+-- Not building scaled_mm_c3x_sm90 as no compatible archs found in CUDA target architectures
+-- Not building scaled_mm_c3x_120 as no compatible archs found in CUDA target architectures
+-- Not building scaled_mm_c3x_100 as no compatible archs found in CUDA target architectures
+-- Not building scaled_mm_c2x as no compatible archs found in CUDA target architectures
+-- Not building grouped_mm_c3x as no compatible archs found in CUDA target architectures.
+-- Not building grouped_mm_c3x as no compatible archs found in CUDA target architectures.
+-- Not building moe_data as no compatible archs found in CUDA target architectures.
+-- Not building SM12x NVFP4 as no compatible archs were found.
+-- Not building SM10x/11x NVFP4/MXFP4 as no compatible archs were found.
+-- Not building W4A8 kernels as no compatible archs found in CUDA target architectures
+-- Not building CUTLASS MLA as no compatible archs were found.
+-- Enabling C_stable extension.
+-- Not building Marlin MOE kernels as no compatible archs found in CUDA target architectures
+-- Not building DSV3 router GEMM kernels as no compatible archs found (requires SM90+ and CUDA >= 12.0)
+-- Enabling MoE C_stable extension.
+-- Enabling SM70 TurboMind AWQ GEMM extension.
+-- [triton_kernels] Fetch from https://github.com/triton-lang/triton.git:v3.5.1
+-- [triton_kernels] triton_kernels is available at /data/src/vllm/.deps/triton_kernels-src/python/triton_kernels/triton_kernels/
+-- DeepGEMM is available at /data/src/vllm/.deps/deepgemm-src
+-- DeepGEMM will not compile: unsupported CUDA architecture 7.0
+CMake Warning (author) at /data/vllm-dev/lib/python3.12/site-packages/cmake/data/share/cmake-4.4/Modules/FetchContent.cmake:1968 (message):
+  Calling FetchContent_Populate(fmha_sm100) is deprecated, call
+  FetchContent_MakeAvailable(fmha_sm100) instead.  Policy CMP0169 can be set
+  to OLD to allow FetchContent_Populate(fmha_sm100) to be called directly for
+  now, but the ability to call it with declared details will be removed
+  completely in a future version.
+Call Stack (most recent call first):
+  cmake/external_projects/fmha_sm100.cmake:29 (FetchContent_Populate)
+  CMakeLists.txt:1636 (include)
+This warning is for project developers.  Use -Wno-author to suppress it.
+
+-- fmha_sm100 is available at /data/src/vllm/.deps/fmha_sm100-src
+-- FlashMLA is available at /data/src/vllm/.deps/flashmla-src
+-- FlashMLA will not compile: unsupported CUDA architecture 7.0
+-- FlashKDA is available at /data/src/vllm/.deps/flashkda-src
+-- FlashKDA will not compile: CUDA >=12.0 and a supported architecture (SM90, SM10x, or SM12x) are required
+-- [QUTLASS] QuTLASS is available at /data/src/vllm/.deps/qutlass-src
+-- [QUTLASS] Skipping build: no supported arch (12.0f / 10.0f) found in CUDA_ARCHS='7.0'.
+CMake Warning (author) at /data/vllm-dev/lib/python3.12/site-packages/cmake/data/share/cmake-4.4/Modules/FetchContent.cmake:1968 (message):
+  Calling FetchContent_Populate(tml_fa4) is deprecated, call
+  FetchContent_MakeAvailable(tml_fa4) instead.  Policy CMP0169 can be set to
+  OLD to allow FetchContent_Populate(tml_fa4) to be called directly for now,
+  but the ability to call it with declared details will be removed completely
+  in a future version.
+Call Stack (most recent call first):
+  cmake/external_projects/tml_fa4.cmake:25 (FetchContent_Populate)
+  CMakeLists.txt:1640 (include)
+This warning is for project developers.  Use -Wno-author to suppress it.
+
+-- tml-fa4 is available at /data/src/vllm/.deps/tml_fa4-src
+-- Build type: Release
+-- Target device: cuda
+-- Found Python: /data/vllm-dev/bin/python (found version "3.12.13") found components: Interpreter Development.Module Development.SABIModule
+CMake Warning at .deps/vllm-flash-attn-src/CMakeLists.txt:77 (message):
+  Pytorch version 2.4.0 expected for CUDA build, saw 2.13.0 instead.
+
+
+-- CUDA target architectures: 7.0
+-- CUDA supported target architectures: 
+-- FA2_ARCHS: 
+-- FA3_ARCHS: 
+-- vllm-flash-attn is available at /data/src/vllm/.deps/vllm-flash-attn-src
+-- Configuring done (9.8s)
+-- Generating done (0.1s)
+-- Build files have been written to: /data/src/vllm/build-sm70
+[1/41] Building CXX object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/custom_all_gather_reduce_scatter_ops.cpp.o
+[2/41] Building CXX object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/torch_bindings.cpp.o
+[3/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/ngram_embedding_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[4/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/custom_all_reduce.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[5/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/fp4/nvfp4_scaled_mm_entry.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[6/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/attention/dcp_utils/dcp_direct_kv_gather.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[7/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/attention/flash_attn_sm70_wmma.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+/data/src/vllm/csrc/libtorch_stable/attention/flash_attn_sm70_wmma.cu(457): warning #177-D: variable "SD" was declared but never referenced
+        constexpr int SD = HD / 16;
+                      ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/data/src/vllm/csrc/libtorch_stable/attention/flash_attn_sm70_wmma.cu(611): warning #177-D: variable "SD" was declared but never referenced
+        constexpr int SD = HD / 16;
+                      ^
+
+/data/src/vllm/csrc/libtorch_stable/attention/flash_attn_sm70_wmma.cu(1211): warning #177-D: variable "vllm::sm70_fla::WY_SK" was declared but never referenced
+  constexpr int WY_SK = WY_BK + 8;
+                ^
+
+/data/src/vllm/csrc/libtorch_stable/attention/flash_attn_sm70_wmma.cu(1427): warning #177-D: variable "vllm::sm70_fla::CO_SV" was declared but never referenced
+  constexpr int CO_SV = CO_BV + 8;
+                ^
+
+[8/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/cuda_view.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[9/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/w8a8/int8/per_token_group_quant.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[10/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/fp4/nvfp4_quant_entry.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[11/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/awq/gemm_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[12/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/permute_cols.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[13/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/attention/dcp_utils/dcp_direct_a2a_lse_reduce.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[14/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/attention/merge_attn_states.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[15/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/w8a8/cutlass/scaled_mm_entry.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[16/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/attention/dcp_utils/dcp_direct_q_gather.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[17/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/pos_encoding_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[18/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/custom_all_gather_reduce_scatter.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[19/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[20/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/fused_kernels/fused_silu_mul_block_quant.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[21/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/activation_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[22/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/w8a8/int8/scaled_quant.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[23/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/fused_kimi_k3_mla_key_concat_kv_cache_kernel.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[24/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/layernorm_quant_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+/data/src/vllm/csrc/libtorch_stable/layernorm_quant_kernels.cu(98): warning #1444-D: variable "std::is_pod_v [with _Tp=vllm::_f16Vec<float, 8>]" was declared deprecated ("use 'is_standard_layout_v && is_trivial_v' instead")
+    static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
+                       ^
+/usr/include/c++/13/type_traits(3229): note #3287-D: because of a "deprecated" attribute
+    __attribute__ ((__deprecated__ ("use '" "is_standard_layout_v && is_trivial_v" "' instead")))
+                    ^
+          detected during instantiation of "std::enable_if_t<<expression>, void> vllm::fused_add_rms_norm_static_fp8_quant_kernel<scalar_t,width,fp8_type>(fp8_type *, scalar_t *, int, scalar_t *, const scalar_t *, const float *, float, int, int) [with scalar_t=float, width=8, fp8_type=c10::Float8_e4m3fn]" at line 305
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/data/src/vllm/csrc/libtorch_stable/layernorm_quant_kernels.cu(98): warning #1444-D: variable "std::is_pod_v [with _Tp=vllm::_f16Vec<c10::Half, 8>]" was declared deprecated ("use 'is_standard_layout_v && is_trivial_v' instead")
+    static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
+                       ^
+/usr/include/c++/13/type_traits(3229): note #3287-D: because of a "deprecated" attribute
+    __attribute__ ((__deprecated__ ("use '" "is_standard_layout_v && is_trivial_v" "' instead")))
+                    ^
+          detected during instantiation of "std::enable_if_t<<expression>, void> vllm::fused_add_rms_norm_static_fp8_quant_kernel<scalar_t,width,fp8_type>(fp8_type *, scalar_t *, int, scalar_t *, const scalar_t *, const float *, float, int, int) [with scalar_t=c10::Half, width=8, fp8_type=c10::Float8_e4m3fn]" at line 305
+
+[25/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/activation_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[26/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/fused_qknorm_rope_kernel.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[27/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/awq/gemm_sm70_wmma.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[28/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[29/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/w8a8/fp8/common.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+/data/src/vllm/csrc/libtorch_stable/quantization/w8a8/fp8/../../../../quantization/w8a8/fp8/../../utils.cuh:42:1: warning: ‘host’ attribute directive ignored [-Wattributes]
+   42 | MAYBE_HOST_DEVICE static constexpr T quant_type_max_v =
+      | ^~~~~~~~~~~~~~~~
+[30/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/w8a8/fp8/per_token_group_quant.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[31/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/cache_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+/data/src/vllm/csrc/libtorch_stable/cache_kernels.cu(83): warning #177-D: variable "<unnamed>::kRocmDefaultMaxBatchDescriptors" was declared but never referenced
+  constexpr int64_t kRocmDefaultMaxBatchDescriptors = 8192;
+                    ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[32/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/sampler.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+/data/src/vllm/csrc/libtorch_stable/sampler.cu(626): warning #177-D: variable "vllm::kGfx950C4AShortRowNumBlocks" was declared but never referenced
+  constexpr int kGfx950C4AShortRowNumBlocks = 3;
+                ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/data/src/vllm/csrc/libtorch_stable/sampler.cu(627): warning #177-D: variable "vllm::kGfx950C4ALongRowNumBlocks" was declared but never referenced
+  constexpr int kGfx950C4ALongRowNumBlocks = 2;
+                ^
+
+/data/src/vllm/csrc/libtorch_stable/sampler.cu(628): warning #177-D: variable "vllm::kGfx950C4ATwoSplitMinRowLength" was declared but never referenced
+  constexpr int kGfx950C4ATwoSplitMinRowLength = 64 * 1024;
+                ^
+
+[33/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/minimax_reduce_rms_kernel.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[34/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/gptq/q_gemm.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[35/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/cache_kernels_fused.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[36/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/layernorm_kernels.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+/data/src/vllm/csrc/libtorch_stable/layernorm_kernels.cu(116): warning #1444-D: variable "std::is_pod_v [with _Tp=vllm::_f16Vec<float, 8>]" was declared deprecated ("use 'is_standard_layout_v && is_trivial_v' instead")
+    static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
+                       ^
+/usr/include/c++/13/type_traits(3229): note #3287-D: because of a "deprecated" attribute
+    __attribute__ ((__deprecated__ ("use '" "is_standard_layout_v && is_trivial_v" "' instead")))
+                    ^
+          detected during instantiation of "std::enable_if_t<<expression>, void> vllm::fused_add_rms_norm_kernel<scalar_t,width,HasWeight>(scalar_t *, int64_t, scalar_t *, const scalar_t *, float, int, int, int64_t) [with scalar_t=float, width=8, HasWeight=true]" at line 359
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/data/src/vllm/csrc/libtorch_stable/layernorm_kernels.cu(116): warning #1444-D: variable "std::is_pod_v [with _Tp=vllm::_f16Vec<float, 8>]" was declared deprecated ("use 'is_standard_layout_v && is_trivial_v' instead")
+    static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
+                       ^
+/usr/include/c++/13/type_traits(3229): note #3287-D: because of a "deprecated" attribute
+    __attribute__ ((__deprecated__ ("use '" "is_standard_layout_v && is_trivial_v" "' instead")))
+                    ^
+          detected during instantiation of "std::enable_if_t<<expression>, void> vllm::fused_add_rms_norm_kernel<scalar_t,width,HasWeight>(scalar_t *, int64_t, scalar_t *, const scalar_t *, float, int, int, int64_t) [with scalar_t=float, width=8, HasWeight=false]" at line 359
+
+/data/src/vllm/csrc/libtorch_stable/layernorm_kernels.cu(116): warning #1444-D: variable "std::is_pod_v [with _Tp=vllm::_f16Vec<c10::Half, 8>]" was declared deprecated ("use 'is_standard_layout_v && is_trivial_v' instead")
+    static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
+                       ^
+/usr/include/c++/13/type_traits(3229): note #3287-D: because of a "deprecated" attribute
+    __attribute__ ((__deprecated__ ("use '" "is_standard_layout_v && is_trivial_v" "' instead")))
+                    ^
+          detected during instantiation of "std::enable_if_t<<expression>, void> vllm::fused_add_rms_norm_kernel<scalar_t,width,HasWeight>(scalar_t *, int64_t, scalar_t *, const scalar_t *, float, int, int, int64_t) [with scalar_t=c10::Half, width=8, HasWeight=true]" at line 359
+
+/data/src/vllm/csrc/libtorch_stable/layernorm_kernels.cu(116): warning #1444-D: variable "std::is_pod_v [with _Tp=vllm::_f16Vec<c10::Half, 8>]" was declared deprecated ("use 'is_standard_layout_v && is_trivial_v' instead")
+    static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
+                       ^
+/usr/include/c++/13/type_traits(3229): note #3287-D: because of a "deprecated" attribute
+    __attribute__ ((__deprecated__ ("use '" "is_standard_layout_v && is_trivial_v" "' instead")))
+                    ^
+          detected during instantiation of "std::enable_if_t<<expression>, void> vllm::fused_add_rms_norm_kernel<scalar_t,width,HasWeight>(scalar_t *, int64_t, scalar_t *, const scalar_t *, float, int, int, int64_t) [with scalar_t=c10::Half, width=8, HasWeight=false]" at line 359
+
+[37/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/topk.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[38/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/quantization/fused_kernels/fused_layernorm_dynamic_per_token_quant.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[39/41] Building CUDA object CMakeFiles/_C_stable_libtorch.dir/csrc/libtorch_stable/mamba/selective_scan_fwd.cu.o
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+[40/41] Linking CXX shared module _C_stable_libtorch.abi3.so
+=== Installed: vllm/_C_stable_libtorch.abi3.so ===
+=== Done ===

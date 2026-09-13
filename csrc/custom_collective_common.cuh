@@ -45,6 +45,38 @@ inline hipPointer_attribute rangeStartAddrAttr =
     HIP_POINTER_ATTRIBUTE_RANGE_START_ADDR;
 #endif
 
+// SM70 (V100) TP2 small-allreduce: use a single block for tensors
+// ≤ 40 KB to eliminate cross-block spin overhead. This is the key
+// 1Cat decode optimization — the default 36 blocks waste GPU cycles
+// spinning when the two TP ranks progress at different rates.
+constexpr size_t kSm70Tp2SmallAllreduceBytes = 40 * 1024;
+
+inline bool custom_allreduce_sm70_tp2_small(int world_size, size_t bytes) {
+#ifndef USE_ROCM
+  // Opt-in only: the single-block variant measurably slows the NVLink TP2
+  // decode (6.0 vs 11.0 tok/s @51k) because the cross-device flag protocol
+  // serializes a single block. Keep the multi-block (default) path unless
+  // VLLM_SM70_1BLOCK_AR=1 explicitly requests it.
+  static int enabled = -1;
+  if (enabled < 0)
+    enabled = (std::getenv("VLLM_SM70_1BLOCK_AR") != nullptr);
+  if (!enabled) return false;
+  if (world_size != 2 || bytes > kSm70Tp2SmallAllreduceBytes)
+    return false;
+  static int cached_arch = -1;
+  if (cached_arch < 0) {
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess)
+      cached_arch = prop.major * 10 + prop.minor;
+    else
+      cached_arch = 0;
+  }
+  return cached_arch == 70;
+#else
+  return false;
+#endif
+}
+
 // Counter may overflow, but it's fine since unsigned int overflow is
 // well-defined behavior.
 using FlagType = uint32_t;

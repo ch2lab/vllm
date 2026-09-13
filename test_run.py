@@ -1,5 +1,8 @@
 """SM70 performance benchmark: Qwen3.6-27B-AWQ, MTP4, TP2, FP8 KV cache."""
 import os, time
+# TP2 must run on the NVLink pair: GPU0<->1 is PCIe-host-bridge (no NVLink)
+# and deadlocks the custom-AR P2P flag protocol; GPU1<->2 is NV6.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1,2")
 os.environ["VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS"] = "0"
 
 LOG = "/data/src/vllm/bench_result.log"

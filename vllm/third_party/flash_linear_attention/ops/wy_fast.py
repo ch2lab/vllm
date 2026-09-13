@@ -14,6 +14,7 @@ import torch
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
+from ._sm70_prof import profiled
 from .index import prepare_chunk_indices
 
 
@@ -117,6 +118,7 @@ def recompute_w_u_fwd_kernel(
         tl.store(p_w, b_w.to(p_w.dtype.element_ty), boundary_check=(0, 1))
 
 
+@profiled("fla.wy")
 def recompute_w_u_fwd(
     k: torch.Tensor,
     v: torch.Tensor,

@@ -13,6 +13,7 @@ import torch
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
+from ._sm70_prof import profiled
 from .index import prepare_chunk_indices
 from .op import exp
 from .utils import FLA_CHUNK_SIZE
@@ -116,6 +117,7 @@ def chunk_scaled_dot_kkt_fwd_kernel(
     tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))
 
 
+@profiled("fla.kkt")
 def chunk_scaled_dot_kkt_fwd(
     k: torch.Tensor,
     g: torch.Tensor | None = None,

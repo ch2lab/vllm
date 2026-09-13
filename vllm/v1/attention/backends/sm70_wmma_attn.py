@@ -9,18 +9,27 @@ to reuse its metadata builder and KV cache layout.
 
 from typing import ClassVar
 
+import os as _os
 import torch
 from dataclasses import replace
 
 from vllm.config.cache import CacheDType
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.torch_utils import nvfp4_kv_cache_full_dim
+from vllm.v1.attention.backends.sm70_nvfp4_kv import (
+    nvfp4_write as nvfp4_write_fused,
+)
 from vllm.v1.attention.backends.triton_attn import (
     TritonAttentionBackend,
     TritonAttentionImpl,
     TritonAttentionMetadata,
 )
 from vllm.v1.kv_cache_layout import KVCacheLayout
+
+_PROF = _os.environ.get("VLLM_SM70_PROFILE", "0") == "1"
+_PROF_ATT = {"ms": 0.0, "count": 0}
+_PROF_ATT_PAIRS = []
+_PROF_ATT_TAG = {"name": ""}
 
 
 class SM70WMMAAttentionBackend(TritonAttentionBackend):
@@ -30,6 +39,7 @@ class SM70WMMAAttentionBackend(TritonAttentionBackend):
         "float16",
         "fp8",
         "fp8_e4m3",
+        "fp8_e5m2",
         "nvfp4",
     ]
 
@@ -127,6 +137,7 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
             kv_cache_dtype = "auto"
 
         self._sm70_fp8_kv = str(kv_cache_dtype).startswith("fp8")
+        self._sm70_fp8_e5m2 = str(kv_cache_dtype) == "fp8_e5m2"
         self._sm70_nvfp4_kv = str(kv_cache_dtype) == "nvfp4"
         if self._sm70_fp8_kv or self._sm70_nvfp4_kv:
             # Bypass Triton's quant-KV gates — our kernel dequants inline
@@ -142,17 +153,18 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         # The WMMA kernel takes FP16 Q and dequants FP8 KV inline; do not
         # let the attention layer pre-quantize Q to FP8.
         self.supports_quant_query_input = False
-
-    _NVFP4_LEVELS = None
+        # Created at init (outside CUDA graph capture): the lazy path would
+        # issue a CPU->CUDA copy during capture and abort graph capture.
+        self._nvfp4_levels = torch.tensor(
+            [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device="cuda"
+        )
 
     def _nvfp4_write(self, layer, key, value, kv_cache, slot_mapping):
         """Quantize K/V to nvfp4 and scatter into the paged cache.
 
-        Pure-PyTorch port of the upstream CUDA store kernel (which needs
-        Blackwell cvt instructions): sf = e4m3(amax / (6*gs)), nibble =
-        nearest e2m1 of x / (fp8(sf) * gs); dequant is
-        lut[nib] * fp8(sf) * gs (what the WMMA kernel does). Layout per
-        page: [K data | K scales | V data | V scales], NHD per region.
+        Fused Triton path (``sm70_nvfp4_kv.nvfp4_write``); the pure-PyTorch
+        port of the upstream CUDA store kernel burned ~70% of the decode
+        worker's CPU in the 55-op/step path and was replaced by this.
         """
         num_tokens = key.shape[0]
         if num_tokens == 0:
@@ -178,11 +190,7 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         BS = kv_cache.shape[2]
         page = kv_cache.stride(0)
         dev = key.device
-        if SM70WMMAAttentionImpl._NVFP4_LEVELS is None:
-            SM70WMMAAttentionImpl._NVFP4_LEVELS = torch.tensor(
-                [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=dev
-            )
-        levels = SM70WMMAAttentionImpl._NVFP4_LEVELS
+        levels = self._nvfp4_levels
 
         def quant(x, gs):
             xf = x.float().view(num_tokens, num_kv_heads, hs // 16, 16)
@@ -195,8 +203,16 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
             packed = nib[..., 0::2] | (nib[..., 1::2] << 4)
             return packed, sf.view(torch.uint8).squeeze(-1)
 
-        kb, ksf = quant(key, layer._k_scale)
-        vb, vsf = quant(value, layer._v_scale)
+        # Host scalar copies avoid a device sync during CUDA graph capture.
+        # _*_scale_float is a plain Python float set on every init path;
+        # _*_scale_cpu may live on device when created under the CUDA
+        # default-device context, so prefer the float attribute.
+        gs_k = float(getattr(layer, "_k_scale_float",
+                             getattr(layer, "_k_scale_cpu", layer._k_scale)))
+        gs_v = float(getattr(layer, "_v_scale_float",
+                             getattr(layer, "_v_scale_cpu", layer._v_scale)))
+        kb, ksf = quant(key, gs_k)
+        vb, vsf = quant(value, gs_v)
 
         flat = kv_cache.reshape(-1)
         blk = slot_mapping // BS
@@ -226,7 +242,7 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         slot_mapping: torch.Tensor,
     ):
         if self._sm70_nvfp4_kv:
-            self._nvfp4_write(layer, key, value, kv_cache, slot_mapping)
+            nvfp4_write_fused(layer, key, value, kv_cache, slot_mapping)
             return
 
         if not self._sm70_fp8_kv:
@@ -265,11 +281,15 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         value_cache = kv_cache[:, :, :, head_size:]
 
         # Quantize: fp16 / scale -> clamp -> fp8 -> view as uint8
-        key_fp8 = (key.float() / k_scale).clamp(-448, 448).to(
-            torch.float8_e4m3fn
+        if self._sm70_fp8_e5m2:
+            fp8_dtype, lim = torch.float8_e5m2, 57344.0
+        else:
+            fp8_dtype, lim = torch.float8_e4m3fn, 448.0
+        key_fp8 = (key.float() / k_scale).clamp(-lim, lim).to(
+            fp8_dtype
         ).view(torch.uint8)
-        value_fp8 = (value.float() / v_scale).clamp(-448, 448).to(
-            torch.float8_e4m3fn
+        value_fp8 = (value.float() / v_scale).clamp(-lim, lim).to(
+            fp8_dtype
         ).view(torch.uint8)
 
         # Scatter into paged cache
@@ -294,6 +314,15 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
     ) -> torch.Tensor:
         if attn_metadata is None:
             return output.fill_(0)
+        if _PROF and not torch.cuda.is_current_stream_capturing():
+            _start = torch.cuda.Event(enable_timing=True)
+            _start.record()
+            _PROF_ATT_TAG["name"] = (
+                f"prefill_mq={attn_metadata.max_query_len} "
+                f"ml={attn_metadata.max_seq_len}"
+                if attn_metadata.max_query_len > 1
+                else f"decode ml={attn_metadata.max_seq_len}"
+            )
 
         num_actual_tokens = attn_metadata.num_actual_tokens
         max_query_len = attn_metadata.max_query_len
@@ -319,6 +348,26 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         num_seqs = query_start_loc.shape[0] - 1
         out = output[:num_actual_tokens]
 
+        # Small-query prefill (chunked prefill / partial prefill) scans the
+        # full KV span through the general-purpose kernel, which is ~6x
+        # slower than the partition-scan decode kernel for the same KV.
+        # Route max_query_len <= BM through the decode kernel instead.
+        # NOTE: num_partitions is a kernel launch constant captured by CUDA
+        # graphs. Deriving it from the runtime max_seq_len makes a graph
+        # captured with a small dummy seq_len replay with num_partitions=1,
+        # collapsing long-context decode to a full-KV scan (13.6K ctx
+        # measured at 421ms/step vs 24ms with partitions). Always use the
+        # full split so capture and replay agree; empty partitions
+        # write max=-inf which the log-sum-exp merge zero-weights.
+        def _mk_partitions(max_seq_len):
+            return int(_os.environ.get("VLLM_SM70_ATT_PARTITIONS", "64"))
+
+        # Routing small multi-token queries (MTP verify) through the
+        # partitioned decode kernel. Verified coherent end-to-end and +53%
+        # long-context decode (8.7 -> 13.3 tok/s @15.4k); set to "0" to use
+        # the general-purpose scan instead.
+        _mq_decode = _os.environ.get("VLLM_SM70_ATT_MQ_DECODE", "1") == "1"
+
         if quant_kv:
             # Batched paged WMMA kernel. Reads query_start_loc / seq_lens /
             # block_table on-device, so it is CUDA-graph safe. The kernel
@@ -333,25 +382,33 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
                 # the following num_kv_heads rows in the same tensor; the
                 # kernel reaches V at +num_kv_heads*stride_head.
                 kv_mode = 3
+            elif self._sm70_fp8_e5m2:
+                kv_mode = 4
             else:
                 kv_mode = 1
             # Host copies of the scales avoid device syncs during capture.
-            k_scale = getattr(layer, "_k_scale_cpu", layer._k_scale).item()
-            v_scale = getattr(layer, "_v_scale_cpu", layer._v_scale).item()
+            k_scale = float(getattr(layer, "_k_scale_float",
+                                    getattr(layer, "_k_scale_cpu", layer._k_scale)))
+            v_scale = float(getattr(layer, "_v_scale_float",
+                                    getattr(layer, "_v_scale_cpu", layer._v_scale)))
             if max_query_len == 1:
                 # Parallel KV-partition decode: splits the KV span across
                 # blocks and merges via log-sum-exp, avoiding the O(KV)
                 # single-block scan that dominates long-context decode.
                 max_seq_len = attn_metadata.max_seq_len
                 # Cap partitions at the kernel's MAX_PARTITIONS buffer.
-                target_seg = max(1024, (max_seq_len + 15) // 16)
-                num_partitions = max(
-                    1, (max_seq_len + target_seg - 1) // target_seg
-                )
+                num_partitions = _mk_partitions(max_seq_len)
                 O = torch.ops._C.flash_attn_sm70_decode_partitioned(
                     q, kv_cache_u8, block_table, query_start_loc, seq_lens,
                     max_query_len, num_seqs, num_partitions, self.scale,
                     k_scale, v_scale, kv_mode, 1,
+                )
+            elif _mq_decode and max_query_len <= 16:
+                num_partitions = _mk_partitions(attn_metadata.max_seq_len)
+                O = torch.ops._C.flash_attn_sm70_decode_partitioned(
+                    q, kv_cache_u8, block_table, query_start_loc, seq_lens,
+                    max_query_len, num_seqs, num_partitions, self.scale,
+                    k_scale, v_scale, kv_mode, 0,
                 )
             else:
                 O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(
@@ -363,11 +420,46 @@ class SM70WMMAAttentionImpl(TritonAttentionImpl):
         else:
             # FP16 path: batched paged WMMA kernel (handles all sequences
             # in a single launch, reads indices on-device).
-            O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(
-                q, kv_cache, block_table, query_start_loc, seq_lens,
-                num_seqs, max_query_len, self.scale,
-                True, 1.0, 1.0, 0,
-            )
+            if _mq_decode and max_query_len <= 16:
+                num_partitions = _mk_partitions(attn_metadata.max_seq_len)
+                O = torch.ops._C.flash_attn_sm70_decode_partitioned(
+                    q, kv_cache, block_table, query_start_loc, seq_lens,
+                    max_query_len, num_seqs, num_partitions, self.scale,
+                    1.0, 1.0, 0, 0,
+                )
+            else:
+                O = torch.ops._C.flash_attn_sm70_prefill_paged_batched(
+                    q, kv_cache, block_table, query_start_loc, seq_lens,
+                    num_seqs, max_query_len, self.scale,
+                    True, 1.0, 1.0, 0,
+                )
             out.copy_(O)
 
+        if _PROF and not torch.cuda.is_current_stream_capturing():
+            _end = torch.cuda.Event(enable_timing=True)
+            _end.record()
+            _PROF_ATT_PAIRS.append((_start, _end, _PROF_ATT_TAG["name"]))
+            self._maybe_log_att_profile()
         return output
+
+    def _maybe_log_att_profile(self):
+        if not _PROF:
+            return
+        if len(_PROF_ATT_PAIRS) >= 100:
+            torch.cuda.synchronize()
+            total = sum(s.elapsed_time(e) for s, e, _ in _PROF_ATT_PAIRS)
+            _PROF_ATT["ms"] += total
+            _PROF_ATT["count"] += len(_PROF_ATT_PAIRS)
+            pairs = _PROF_ATT_PAIRS.copy()
+            _PROF_ATT_PAIRS.clear()
+            from collections import Counter
+
+            tags = Counter(t for _, _, t in pairs)
+            tag_str = ", ".join(f"{t}:{c}" for t, c in tags.most_common(3))
+            print(
+                f"[gdn-profile] attention: {len(pairs)} calls, "
+                f"{total:.1f} ms (avg {total / len(pairs):.3f} ms), "
+                f"cumulative {_PROF_ATT['ms']:.1f} ms / {_PROF_ATT['count']}; "
+                f"tags: {tag_str}",
+                flush=True,
+            )

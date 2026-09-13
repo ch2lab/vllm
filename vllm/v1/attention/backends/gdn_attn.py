@@ -72,6 +72,10 @@ class GDNAttentionMetadata:
     prefill_query_start_loc: torch.Tensor | None = None
     prefill_state_indices: torch.Tensor | None = None
     prefill_has_initial_state: torch.Tensor | None = None
+    # Max per-sequence query length of the chunk-kernel batch (0 when no
+    # prefills); lets the FLA entry route small-uniform batches to the fused
+    # single-chunk kernel without reading GPU tensors.
+    max_prefill_qlen: int = 0
 
     # The following attributes are for triton implementation of causal_conv1d
     nums_dict: dict | None = None
@@ -370,6 +374,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         prefill_query_start_loc: torch.Tensor | None = None
         prefill_state_indices: torch.Tensor | None = None
         prefill_has_initial_state: torch.Tensor | None = None
+        max_prefill_qlen = 0
         if num_prefills > 0:
             # In a mixed non-spec batch, decodes are peeled off to the recurrent
             # kernel (decode-first front slice), so build chunk metadata from the
@@ -390,6 +395,18 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 prefill_query_start_loc = non_spec_query_start_loc
                 prefill_query_start_loc_cpu = non_spec_query_start_loc_cpu
                 prefill_state_indices = non_spec_state_indices_tensor
+
+            if prefill_query_start_loc_cpu is not None and (
+                prefill_query_start_loc_cpu.numel() > 1
+            ):
+                max_prefill_qlen = int(
+                    (
+                        prefill_query_start_loc_cpu[1:]
+                        - prefill_query_start_loc_cpu[:-1]
+                    )
+                    .max()
+                    .item()
+                )
 
             chunk_indices, chunk_offsets = self._build_chunk_metadata(
                 prefill_query_start_loc,
@@ -508,6 +525,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             prefill_query_start_loc=prefill_query_start_loc,
             prefill_state_indices=prefill_state_indices,
             prefill_has_initial_state=prefill_has_initial_state,
+            max_prefill_qlen=max_prefill_qlen,
             spec_query_start_loc=spec_query_start_loc,
             non_spec_query_start_loc=non_spec_query_start_loc,
             spec_state_indices_tensor=spec_state_indices_tensor,

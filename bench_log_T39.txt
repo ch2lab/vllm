@@ -1,0 +1,363 @@
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:345] 
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:345]        █     █     █▄   ▄█
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:345]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.26.1rc1.dev126+g7fdc31505.d20260801
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:345]   █▄█▀ █     █     █     █  model   /data/models/Qwen3.6-27B-FP8
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:345]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:345] 
+(APIServer pid=1022177) INFO 08-01 22:34:11 [api_utils.py:273] non-default args: {'port': 8199, 'model': '/data/models/Qwen3.6-27B-FP8', 'max_model_len': 32768, 'tensor_parallel_size': 2, 'kv_cache_dtype': 'int4_per_token_head', 'language_model_only': True}
+(APIServer pid=1022177) INFO 08-01 22:34:11 [model.py:638] Resolved architecture: Qwen3_5ForConditionalGeneration
+(APIServer pid=1022177) WARNING 08-01 22:34:11 [model.py:2156] Your device 'Tesla V100-SXM2-32GB' (with compute capability 7.0) doesn't support torch.bfloat16. Falling back to torch.float16 for compatibility.
+(APIServer pid=1022177) WARNING 08-01 22:34:11 [model.py:2209] Casting torch.bfloat16 to torch.float16.
+(APIServer pid=1022177) INFO 08-01 22:34:11 [model.py:1875] Using max model len 32768
+(APIServer pid=1022177) INFO 08-01 22:34:13 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+(APIServer pid=1022177) INFO 08-01 22:34:13 [model.py:834] Disabled mm_prefix attention mode because multimodal inputs are configuration-disabled. Attention backends without mm_prefix support may now be selected.
+(APIServer pid=1022177) INFO 08-01 22:34:13 [cache.py:289] Using int4_per_token_head data type to store kv cache. It reduces the GPU memory footprint and boosts the performance. Dynamic per-token-head scales will be computed at runtime.
+(APIServer pid=1022177) INFO 08-01 22:34:13 [vllm.py:1118] Asynchronous scheduling is enabled.
+(APIServer pid=1022177) INFO 08-01 22:34:13 [cuda.py:323] SM70 detected: auto-setting cudagraph_mode=FULL_DECODE_ONLY
+(APIServer pid=1022177) INFO 08-01 22:34:13 [cuda.py:328] SM70 detected: auto-setting compilation mode=NONE (torch.compile not beneficial on Volta)
+(APIServer pid=1022177) INFO 08-01 22:34:13 [cuda.py:334] SM70 detected: capping max_cudagraph_capture_size=64 to conserve GPU memory on Volta
+(APIServer pid=1022177) INFO 08-01 22:34:13 [kernel.py:306] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(APIServer pid=1022177) INFO 08-01 22:34:13 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+(EngineCore pid=1022539) INFO 08-01 22:34:26 [core.py:121] Initializing a V1 LLM engine (v0.26.1rc1.dev126+g7fdc31505.d20260801) with config: model='/data/models/Qwen3.6-27B-FP8', speculative_config=None, tokenizer='/data/models/Qwen3.6-27B-FP8', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=32768, download_dir=None, load_format=auto, tensor_parallel_size=2, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=fp8, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=int4_per_token_head, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/data/models/Qwen3.6-27B-FP8, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8', 'all', '+quant_fp8'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_DECODE_ONLY: (2, 0)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 64, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, enable_bf16x3_router_gemm=False, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=1022539) WARNING 08-01 22:34:26 [multiproc_executor.py:1081] Reducing Torch parallelism from 22 threads to 1 to avoid unnecessary CPU contention. Set OMP_NUM_THREADS in the external environment to tune this value as needed.
+(EngineCore pid=1022539) INFO 08-01 22:34:26 [multiproc_executor.py:140] DP group leader: node_rank=0, node_rank_within_dp=0, master_addr=127.0.0.1, mq_connect_ip=192.168.8.178 (local), world_size=2, local_world_size=2
+INFO 08-01 22:34:38 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+(Worker pid=1022718) INFO 08-01 22:34:38 [parallel_state.py:1640] world_size=2 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:49477 backend=nccl
+INFO 08-01 22:34:38 [registry.py:134] All limits of multimodal modalities supported by the model are set to 0, running in text-only mode.
+(Worker pid=1022719) INFO 08-01 22:34:38 [parallel_state.py:1640] world_size=2 rank=1 local_rank=1 distributed_init_method=tcp://127.0.0.1:49477 backend=nccl
+(Worker pid=1022718) INFO 08-01 22:34:39 [pynccl.py:113] vLLM is using nccl==2.28.9
+(Worker pid=1022718) WARNING 08-01 22:34:40 [symm_mem.py:67] SymmMemCommunicator: Device capability 7.0 not supported, communicator is not available.
+(Worker pid=1022719) WARNING 08-01 22:34:40 [symm_mem.py:67] SymmMemCommunicator: Device capability 7.0 not supported, communicator is not available.
+(Worker pid=1022718) INFO 08-01 22:34:40 [cuda_communicator.py:266] Using ['CUSTOM', 'PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'AITER_CUSTOM', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=1022718) INFO 08-01 22:34:40 [parallel_state.py:1977] rank 0 in world size 2 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(Worker pid=1022718) WARNING 08-01 22:34:40 [topk_topp_sampler.py:62] FlashInfer top-p/top-k sampling unavailable: unsupported compute capability 7.0; falling back. Set VLLM_USE_FLASHINFER_SAMPLER=0 to silence.
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:40 [gpu_model_runner.py:5308] Starting to load model /data/models/Qwen3.6-27B-FP8...
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:41 [fa_utils.py:265] Cannot use FA version 2 is not supported due to FA2 is only supported on devices with compute capability >= 8
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:41 [mm_encoder_attention.py:373] Using AttentionBackendEnum.TORCH_SDPA for MMEncoderAttention.
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:41 [__init__.py:618] Selected MarlinFP8ScaledMMLinearKernel for Fp8LinearMethod
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:41 [qwen_gdn_linear_attn.py:157] Using Triton/FLA GDN prefill kernel (requested=auto, head_k_dim=128).
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:41 [fa_utils.py:265] Cannot use FA version 2 is not supported due to FA2 is only supported on devices with compute capability >= 8
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:41 [cuda.py:514] Using SM70_WMMA_ATTN attention backend out of potential backends: ['SM70_WMMA_ATTN', 'TRITON_ATTN'].
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:41 [weight_utils.py:867] Filesystem type for checkpoints: EXT4. Checkpoint size: 28.75 GiB. Available RAM: 86.17 GiB.
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:41 [weight_utils.py:890] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:   0% Completed | 0/66 [00:00<?, ?it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:   3% Completed | 2/66 [00:00<00:05, 11.34it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:   6% Completed | 4/66 [00:00<00:05, 10.82it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:   9% Completed | 6/66 [00:00<00:05, 11.04it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  12% Completed | 8/66 [00:00<00:05, 11.37it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  15% Completed | 10/66 [00:00<00:04, 11.40it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  18% Completed | 12/66 [00:01<00:04, 11.60it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  21% Completed | 14/66 [00:01<00:04, 11.74it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  24% Completed | 16/66 [00:01<00:04, 11.88it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  27% Completed | 18/66 [00:01<00:04, 11.84it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  30% Completed | 20/66 [00:01<00:03, 11.81it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  33% Completed | 22/66 [00:01<00:03, 11.85it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  36% Completed | 24/66 [00:02<00:03, 11.94it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  39% Completed | 26/66 [00:02<00:03, 11.35it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  42% Completed | 28/66 [00:02<00:03, 11.16it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  45% Completed | 30/66 [00:02<00:03, 11.02it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  48% Completed | 32/66 [00:02<00:03, 11.01it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  52% Completed | 34/66 [00:02<00:02, 10.92it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  55% Completed | 36/66 [00:03<00:02, 10.93it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  58% Completed | 38/66 [00:03<00:02, 10.92it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  61% Completed | 40/66 [00:03<00:02, 10.95it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  64% Completed | 42/66 [00:03<00:02, 10.95it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  67% Completed | 44/66 [00:03<00:02, 10.83it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  70% Completed | 46/66 [00:04<00:01, 10.68it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  73% Completed | 48/66 [00:04<00:01, 10.81it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  76% Completed | 50/66 [00:04<00:01, 11.02it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  79% Completed | 52/66 [00:04<00:01, 10.96it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  82% Completed | 54/66 [00:04<00:01, 10.87it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  85% Completed | 56/66 [00:05<00:00, 10.88it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  88% Completed | 58/66 [00:05<00:00, 10.86it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  91% Completed | 60/66 [00:05<00:00, 11.03it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  94% Completed | 62/66 [00:05<00:00, 11.24it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards:  97% Completed | 64/66 [00:05<00:00, 11.24it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:09<00:00,  1.76it/s]
+(Worker_TP0 pid=1022718) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:09<00:00,  7.25it/s]
+(Worker_TP0 pid=1022718) 
+(Worker_TP0 pid=1022718) INFO 08-01 22:34:50 [default_loader.py:430] Loading weights took 9.15 seconds
+(Worker_TP0 pid=1022718) WARNING 08-01 22:34:50 [marlin_utils_fp8.py:112] Your GPU does not have native support for FP8 computation but FP8 quantization is being used. Weight-only FP8 compression will be used leveraging the Marlin kernel. This may degrade performance for compute-heavy workloads.
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 648, in __init__
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.worker.load_model()
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_worker.py", line 442, in load_model
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.model_runner.load_model(load_dummy_weights=load_dummy_weights)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_model_runner.py", line 5324, in load_model
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.model = model_loader.load_model(
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]                  ^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/base_loader.py", line 80, in load_model
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     process_weights_after_loading(model, model_config, target_device)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/utils.py", line 113, in process_weights_after_loading
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     quant_method.process_weights_after_loading(module)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/quantization/fp8.py", line 397, in process_weights_after_loading
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.fp8_linear.process_weights_after_loading(layer)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/kernels/linear/scaled_mm/marlin.py", line 81, in process_weights_after_loading
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     prepare_fp8_layer_for_marlin(
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/quantization/utils/marlin_utils_fp8.py", line 145, in prepare_fp8_layer_for_marlin
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     marlin_qweight = ops.gptq_marlin_repack(
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]                      ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/_custom_ops.py", line 1116, in gptq_marlin_repack
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return torch.ops._C.gptq_marlin_repack(
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/vllm-dev/lib/python3.12/site-packages/torch/_ops.py", line 1279, in __call__
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return self._op(*args, **kwargs)
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] NotImplementedError: Could not run '_C::gptq_marlin_repack' with arguments from the 'CUDA' backend. This could be because the operator doesn't exist for this backend, or was omitted during the selective/custom build process (if using custom build). If you are a Facebook employee using PyTorch on mobile, please visit https://fburl.com/ptmfixes for possible resolutions. '_C::gptq_marlin_repack' is only available for these backends: [Meta, BackendSelect, Python, FuncTorchDynamicLayerBackMode, Functionalize, Conjugate, Negative, ZeroTensor, ADInplaceOrView, AutogradOther, AutogradCPU, AutogradCUDA, AutogradXLA, AutogradMPS, AutogradXPU, AutogradHPU, AutogradLazy, AutogradMTIA, AutogradMAIA, AutogradPrivateUse1, AutogradMeta, Tracer, AutocastCPU, AutocastMTIA, AutocastMAIA, AutocastXPU, AutocastMPS, AutocastCUDA, FuncTorchBatched, BatchedNestedTensor, FuncTorchVmapMode, Batched, VmapMode, FuncTorchGradWrapper, PythonTLSSnapshot, FuncTorchDynamicLayerFrontMode, PreDispatch, PythonDispatcher].
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] 
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Meta: registered at /data/vllm-dev/lib/python3.12/site-packages/torch/library.py:1003 [kernel]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] BackendSelect: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/core/BackendSelectFallbackKernel.cpp:3 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Python: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:192 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchDynamicLayerBackMode: registered at /data/src/pytorch-src/aten/src/ATen/functorch/DynamicLayer.cpp:479 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Functionalize: registered at /data/src/pytorch-src/aten/src/ATen/FunctionalizeFallbackKernel.cpp:411 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Conjugate: registered at /data/src/pytorch-src/aten/src/ATen/ConjugateFallback.cpp:17 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Negative: registered at /data/src/pytorch-src/aten/src/ATen/native/NegateFallback.cpp:18 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] ZeroTensor: registered at /data/src/pytorch-src/aten/src/ATen/ZeroTensorFallback.cpp:115 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] ADInplaceOrView: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:103 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradOther: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:62 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradCPU: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:66 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradCUDA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:74 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradXLA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:86 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMPS: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:94 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradXPU: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:70 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradHPU: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:107 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradLazy: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:90 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMTIA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:78 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMAIA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:82 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradPrivateUse1: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:111 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMeta: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:98 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Tracer: registered at /data/src/pytorch-src/torch/csrc/autograd/TraceTypeManual.cpp:296 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastCPU: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:330 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastMTIA: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:472 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastMAIA: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:510 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastXPU: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:548 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastMPS: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:221 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastCUDA: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:177 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchBatched: registered at /data/src/pytorch-src/aten/src/ATen/functorch/LegacyBatchingRegistrations.cpp:730 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] BatchedNestedTensor: registered at /data/src/pytorch-src/aten/src/ATen/functorch/LegacyBatchingRegistrations.cpp:757 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchVmapMode: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/functorch/VmapModeRegistrations.cpp:22 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Batched: registered at /data/src/pytorch-src/aten/src/ATen/LegacyBatchingRegistrations.cpp:1072 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] VmapMode: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/VmapModeRegistrations.cpp:32 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchGradWrapper: registered at /data/src/pytorch-src/aten/src/ATen/functorch/TensorWrapper.cpp:210 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] PythonTLSSnapshot: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:200 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchDynamicLayerFrontMode: registered at /data/src/pytorch-src/aten/src/ATen/functorch/DynamicLayer.cpp:475 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] PreDispatch: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:204 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] PythonDispatcher: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:196 [backend fallback]
+(Worker_TP0 pid=1022718) ERROR 08-01 22:34:51 [multiproc_executor.py:912] 
+(EngineCore pid=1022539) INFO 08-01 22:34:51 [multiproc_executor.py:440] [shutdown] Executor: waiting for worker exit count=2
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 648, in __init__
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.worker.load_model()
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_worker.py", line 442, in load_model
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.model_runner.load_model(load_dummy_weights=load_dummy_weights)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/v1/worker/gpu_model_runner.py", line 5324, in load_model
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.model = model_loader.load_model(
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]                  ^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/base_loader.py", line 80, in load_model
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     process_weights_after_loading(model, model_config, target_device)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/model_loader/utils.py", line 113, in process_weights_after_loading
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     quant_method.process_weights_after_loading(module)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/quantization/fp8.py", line 397, in process_weights_after_loading
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     self.fp8_linear.process_weights_after_loading(layer)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/kernels/linear/scaled_mm/marlin.py", line 81, in process_weights_after_loading
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     prepare_fp8_layer_for_marlin(
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/model_executor/layers/quantization/utils/marlin_utils_fp8.py", line 145, in prepare_fp8_layer_for_marlin
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     marlin_qweight = ops.gptq_marlin_repack(
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]                      ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/src/vllm/vllm/_custom_ops.py", line 1116, in gptq_marlin_repack
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return torch.ops._C.gptq_marlin_repack(
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]   File "/data/vllm-dev/lib/python3.12/site-packages/torch/_ops.py", line 1279, in __call__
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]     return self._op(*args, **kwargs)
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] NotImplementedError: Could not run '_C::gptq_marlin_repack' with arguments from the 'CUDA' backend. This could be because the operator doesn't exist for this backend, or was omitted during the selective/custom build process (if using custom build). If you are a Facebook employee using PyTorch on mobile, please visit https://fburl.com/ptmfixes for possible resolutions. '_C::gptq_marlin_repack' is only available for these backends: [Meta, BackendSelect, Python, FuncTorchDynamicLayerBackMode, Functionalize, Conjugate, Negative, ZeroTensor, ADInplaceOrView, AutogradOther, AutogradCPU, AutogradCUDA, AutogradXLA, AutogradMPS, AutogradXPU, AutogradHPU, AutogradLazy, AutogradMTIA, AutogradMAIA, AutogradPrivateUse1, AutogradMeta, Tracer, AutocastCPU, AutocastMTIA, AutocastMAIA, AutocastXPU, AutocastMPS, AutocastCUDA, FuncTorchBatched, BatchedNestedTensor, FuncTorchVmapMode, Batched, VmapMode, FuncTorchGradWrapper, PythonTLSSnapshot, FuncTorchDynamicLayerFrontMode, PreDispatch, PythonDispatcher].
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] 
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Meta: registered at /data/vllm-dev/lib/python3.12/site-packages/torch/library.py:1003 [kernel]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] BackendSelect: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/core/BackendSelectFallbackKernel.cpp:3 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Python: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:192 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchDynamicLayerBackMode: registered at /data/src/pytorch-src/aten/src/ATen/functorch/DynamicLayer.cpp:479 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Functionalize: registered at /data/src/pytorch-src/aten/src/ATen/FunctionalizeFallbackKernel.cpp:411 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Conjugate: registered at /data/src/pytorch-src/aten/src/ATen/ConjugateFallback.cpp:17 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Negative: registered at /data/src/pytorch-src/aten/src/ATen/native/NegateFallback.cpp:18 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] ZeroTensor: registered at /data/src/pytorch-src/aten/src/ATen/ZeroTensorFallback.cpp:115 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] ADInplaceOrView: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:103 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradOther: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:62 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradCPU: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:66 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradCUDA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:74 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradXLA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:86 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMPS: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:94 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradXPU: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:70 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradHPU: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:107 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradLazy: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:90 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMTIA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:78 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMAIA: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:82 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradPrivateUse1: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:111 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutogradMeta: registered at /data/src/pytorch-src/aten/src/ATen/core/VariableFallbackKernel.cpp:98 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Tracer: registered at /data/src/pytorch-src/torch/csrc/autograd/TraceTypeManual.cpp:296 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastCPU: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:330 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastMTIA: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:472 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastMAIA: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:510 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastXPU: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:548 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastMPS: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:221 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] AutocastCUDA: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/autocast_mode.cpp:177 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchBatched: registered at /data/src/pytorch-src/aten/src/ATen/functorch/LegacyBatchingRegistrations.cpp:730 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] BatchedNestedTensor: registered at /data/src/pytorch-src/aten/src/ATen/functorch/LegacyBatchingRegistrations.cpp:757 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchVmapMode: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/functorch/VmapModeRegistrations.cpp:22 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] Batched: registered at /data/src/pytorch-src/aten/src/ATen/LegacyBatchingRegistrations.cpp:1072 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] VmapMode: fallthrough registered at /data/src/pytorch-src/aten/src/ATen/VmapModeRegistrations.cpp:32 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchGradWrapper: registered at /data/src/pytorch-src/aten/src/ATen/functorch/TensorWrapper.cpp:210 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] PythonTLSSnapshot: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:200 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] FuncTorchDynamicLayerFrontMode: registered at /data/src/pytorch-src/aten/src/ATen/functorch/DynamicLayer.cpp:475 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] PreDispatch: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:204 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] PythonDispatcher: registered at /data/src/pytorch-src/aten/src/ATen/core/PythonFallbackKernel.cpp:196 [backend fallback]
+(Worker_TP1 pid=1022719) ERROR 08-01 22:34:51 [multiproc_executor.py:912] 
+[rank0]:[W801 22:34:52.298567170 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(EngineCore pid=1022539) INFO 08-01 22:34:54 [multiproc_executor.py:447] [shutdown] Executor: all workers exited gracefully
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349] EngineCore failed to start.
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349] Traceback (most recent call last):
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/engine/core.py", line 1318, in run_engine_core
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     return func(*args, **kwargs)
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/engine/core.py", line 1074, in __init__
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     super().__init__(
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/engine/core.py", line 132, in __init__
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     self.model_executor = executor_class(vllm_config)
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 108, in __init__
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     super().__init__(vllm_config)
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     return func(*args, **kwargs)
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/abstract.py", line 109, in __init__
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     self._init_executor()
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 201, in _init_executor
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     self.workers = WorkerProc.wait_for_ready(unready_workers)
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 776, in wait_for_ready
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349]     raise e from None
+(EngineCore pid=1022539) ERROR 08-01 22:34:54 [core.py:1349] Exception: WorkerProc initialization failed due to an exception in a background process. See stack trace for root cause.
+(EngineCore pid=1022539) Process EngineCore:
+(EngineCore pid=1022539) Traceback (most recent call last):
+(EngineCore pid=1022539)   File "/data/vllm-dev/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=1022539)     self.run()
+(EngineCore pid=1022539)   File "/data/vllm-dev/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=1022539)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/engine/core.py", line 1353, in run_engine_core
+(EngineCore pid=1022539)     raise e
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/engine/core.py", line 1318, in run_engine_core
+(EngineCore pid=1022539)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1022539)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1022539)     return func(*args, **kwargs)
+(EngineCore pid=1022539)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/engine/core.py", line 1074, in __init__
+(EngineCore pid=1022539)     super().__init__(
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/engine/core.py", line 132, in __init__
+(EngineCore pid=1022539)     self.model_executor = executor_class(vllm_config)
+(EngineCore pid=1022539)                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 108, in __init__
+(EngineCore pid=1022539)     super().__init__(vllm_config)
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1022539)     return func(*args, **kwargs)
+(EngineCore pid=1022539)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/executor/abstract.py", line 109, in __init__
+(EngineCore pid=1022539)     self._init_executor()
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 201, in _init_executor
+(EngineCore pid=1022539)     self.workers = WorkerProc.wait_for_ready(unready_workers)
+(EngineCore pid=1022539)                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1022539)   File "/data/src/vllm/vllm/v1/executor/multiproc_executor.py", line 776, in wait_for_ready
+(EngineCore pid=1022539)     raise e from None
+(EngineCore pid=1022539) Exception: WorkerProc initialization failed due to an exception in a background process. See stack trace for root cause.
+(APIServer pid=1022177) Traceback (most recent call last):
+(APIServer pid=1022177)   File "<frozen runpy>", line 198, in _run_module_as_main
+(APIServer pid=1022177)   File "<frozen runpy>", line 88, in _run_code
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 802, in <module>
+(APIServer pid=1022177)     uvloop.run(run_server(args))
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=1022177)     return __asyncio.run(
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=1022177)     return runner.run(main)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=1022177)     return self._loop.run_until_complete(task)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=1022177)     return await main
+(APIServer pid=1022177)            ^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 762, in run_server
+(APIServer pid=1022177)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 776, in run_server_worker
+(APIServer pid=1022177)     async with build_async_engine_client(
+(APIServer pid=1022177)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=1022177)     return await anext(self.gen)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 132, in build_async_engine_client
+(APIServer pid=1022177)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=1022177)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=1022177)     return await anext(self.gen)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/entrypoints/openai/api_server.py", line 168, in build_async_engine_client_from_engine_args
+(APIServer pid=1022177)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=1022177)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/async_llm.py", line 220, in from_vllm_config
+(APIServer pid=1022177)     return cls(
+(APIServer pid=1022177)            ^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/async_llm.py", line 149, in __init__
+(APIServer pid=1022177)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=1022177)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1022177)     return func(*args, **kwargs)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/core_client.py", line 139, in make_async_mp_client
+(APIServer pid=1022177)     return AsyncMPClient(*client_args)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1022177)     return func(*args, **kwargs)
+(APIServer pid=1022177)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/core_client.py", line 987, in __init__
+(APIServer pid=1022177)     super().__init__(
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/core_client.py", line 609, in __init__
+(APIServer pid=1022177)     with launch_core_engines(
+(APIServer pid=1022177)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1022177)   File "/data/vllm-dev/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=1022177)     next(self.gen)
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/utils.py", line 1195, in launch_core_engines
+(APIServer pid=1022177)     wait_for_engine_startup(
+(APIServer pid=1022177)   File "/data/src/vllm/vllm/v1/engine/utils.py", line 1254, in wait_for_engine_startup
+(APIServer pid=1022177)     raise RuntimeError(
+(APIServer pid=1022177) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+/data/vllm-dev/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

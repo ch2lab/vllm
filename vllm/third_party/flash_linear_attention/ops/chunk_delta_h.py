@@ -13,6 +13,7 @@ import torch
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
+from ._sm70_prof import profiled
 from .index import prepare_chunk_indices, prepare_chunk_offsets
 from .op import exp, exp2
 from .utils import FLA_CHUNK_SIZE, use_cuda_graph
@@ -318,6 +319,7 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
             tl.store(p_ht, b_h4.to(p_ht.dtype.element_ty), boundary_check=(0, 1))
 
 
+@profiled("fla.delta_h")
 def chunk_gated_delta_rule_fwd_h(
     k: torch.Tensor,
     w: torch.Tensor,
@@ -339,8 +341,12 @@ def chunk_gated_delta_rule_fwd_h(
     H = u.shape[-2]
     BT = chunk_size
 
-    # SM70 CUDA WMMA dispatch
-    if (current_platform.is_cuda()
+    # VLLM_SM70_FLA_DH_WMMA=0 falls back to the Triton kernel.
+    import os as _os
+
+    use_wmma_dh = _os.environ.get("VLLM_SM70_FLA_DH_WMMA", "1") != "0"
+    if (use_wmma_dh
+            and current_platform.is_cuda()
             and current_platform.has_device_capability(70)
             and not current_platform.has_device_capability(80)
             and cu_seqlens is not None
@@ -367,9 +373,16 @@ def chunk_gated_delta_rule_fwd_h(
             g_3d = g_3d.to(torch.float16)
         h0 = initial_state if initial_state is not None else torch.empty(
             0, dtype=torch.float32, device=k.device)
+        # The WMMA kernel reads the state as fp32; the ssm cache is bf16.
+        if h0.numel() > 0 and h0.dtype != torch.float32:
+            h0 = h0.float()
         h, v_new, final_state = torch.ops._C.fla_delta_h_sm70(
             k_4d, w_4d, u_4d, g_3d, cu_seqlens, chunk_offsets, h0,
             output_final_state, len(chunk_indices))
+        # The Triton reference stores h in fp16 (k.new_empty); the WMMA
+        # kernel accumulates in fp32, so round to fp16 before handing h to
+        # the downstream chunk-o kernels.
+        h = h.half()
         if not output_final_state:
             final_state = None
         return h, v_new, final_state

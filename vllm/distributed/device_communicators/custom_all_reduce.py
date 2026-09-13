@@ -32,6 +32,36 @@ except ImportError:
 
 logger = init_logger(__name__)
 
+# Debug: per-rank trace of every custom-AR call to detect cross-rank
+# desync. Enabled with VLLM_DEBUG_AR=1. Writes /tmp/ar_trace_rank{r}.log.
+import os as _os
+
+
+def _ar_trace(rank: int, inp: torch.Tensor) -> None:
+    path = f"/tmp/ar_trace_rank{rank}.log"
+    try:
+        with open(path, "a") as f:
+            capturing = torch.cuda.is_current_stream_capturing()
+            f.write(
+                f"C {inp.numel()*inp.element_size()} "
+                f"{tuple(inp.shape)} cap={capturing}\n"
+            )
+    except Exception:
+        pass
+
+
+def _ar_trace_skip(rank: int, inp: torch.Tensor) -> None:
+    path = f"/tmp/ar_trace_rank{rank}.log"
+    try:
+        with open(path, "a") as f:
+            f.write(
+                f"S {inp.numel()*inp.element_size()} "
+                f"{tuple(inp.shape)}\n"
+            )
+    except Exception:
+        pass
+
+
 
 def _can_p2p(rank: int, world_size: int) -> bool:
     for i in range(world_size):
@@ -383,7 +413,11 @@ class CustomAllreduce:
         """The main allreduce API that provides support for cuda graph."""
         # When custom allreduce is disabled, this will be None.
         if self.disabled or not self.should_custom_ar(input):
+            if _os.environ.get("VLLM_DEBUG_AR") == "1":
+                _ar_trace_skip(self.rank, input)
             return None
+        if _os.environ.get("VLLM_DEBUG_AR") == "1":
+            _ar_trace(self.rank, input)
         if self._IS_CAPTURING:
             if torch.cuda.is_current_stream_capturing():
                 return self.all_reduce(input, registered=True)

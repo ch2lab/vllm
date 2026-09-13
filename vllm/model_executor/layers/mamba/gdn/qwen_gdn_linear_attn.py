@@ -56,6 +56,9 @@ from vllm.third_party.flash_linear_attention.ops import (
     fused_sigmoid_gating_delta_rule_update,
 )
 from vllm.third_party.flash_linear_attention.ops.chunk import l2norm_fwd
+from vllm.third_party.flash_linear_attention.ops.chunk import (
+    sm70_set_max_query_len as _fla_sm70_set_max_query_len,
+)
 from vllm.third_party.flash_linear_attention.ops.utils import FLA_CHUNK_SIZE
 from vllm.transformers_utils.configs.qwen3_next import Qwen3NextConfig
 from vllm.triton_utils import tl, triton
@@ -1499,6 +1502,14 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
 
         # 2.3: Process the remaining part (prefill chunk, or non-spec decode-only)
         if attn_metadata.num_prefills > 0:
+            # Publish the per-sequence query length so the FLA chunk entry
+            # routes small-uniform batches (MTP verify incl. padded dummy
+            # sequences) to the fused single-chunk WMMA kernel instead of the
+            # full cumsum/kkt/solve/wy/delta_h/chunk_o pipeline. The fused
+            # kernel l2-normalizes q/k internally (idempotent for the
+            # already-normalized production inputs) and was validated against
+            # the chunk pipeline (max diff 2e-3 state / 5e-5 output).
+            _fla_sm70_set_max_query_len(attn_metadata.max_prefill_qlen)
             # State indices, initial-state mask and cu_seqlens for the chunk
             # kernel are precomputed by the metadata builder (the prefill tail
             # when decodes are peeled off, else the full non-spec batch), so they

@@ -1,5 +1,8 @@
 """Benchmark prefill speed with various prompt lengths."""
 import time, traceback, os
+# TP2 must run on the NVLink pair (GPU0<->1 has no NVLink; custom AR P2P
+# deadlocks over the PCIe host bridge). GPU1<->2 is NV6.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1,2")
 os.environ["VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS"] = "0"
 LOG = "/data/src/vllm/test_prefill.log"
 

@@ -7,9 +7,33 @@
 # the following copyright notice:
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 
+import os as _os
+
 import torch
 
 from vllm.triton_utils import tl, triton
+
+_PROF = _os.environ.get("VLLM_SM70_PROFILE", "0") == "1"
+_PROF_ACCUM = {"ms": 0.0, "count": 0}
+_PROF_PAIRS = []
+
+
+def _maybe_log_delta_rule_profile():
+    if not _PROF:
+        return
+    if len(_PROF_PAIRS) >= 100:
+        torch.cuda.synchronize()
+        total = sum(s.elapsed_time(e) for s, e in _PROF_PAIRS)
+        _PROF_ACCUM["ms"] += total
+        _PROF_ACCUM["count"] += len(_PROF_PAIRS)
+        pairs = _PROF_PAIRS.copy()
+        _PROF_PAIRS.clear()
+        print(
+            f"[gdn-profile] delta_rule_update: {len(pairs)} calls, "
+            f"{total:.1f} ms (avg {total / len(pairs):.3f} ms), "
+            f"cumulative {_PROF_ACCUM['ms']:.1f} ms / {_PROF_ACCUM['count']}",
+            flush=True,
+        )
 
 
 @triton.heuristics(
@@ -239,6 +263,10 @@ def fused_sigmoid_gating_delta_rule_update(
         stride_indices_seq, stride_indices_tok = ssm_state_indices.stride()
 
     grid = (NK, NV, N * HV)
+    if _PROF and not torch.cuda.is_current_stream_capturing():
+        _start = torch.cuda.Event(enable_timing=True)
+        _end = torch.cuda.Event(enable_timing=True)
+        _start.record()
     fused_sigmoid_gating_delta_rule_update_kernel[grid](
         A_log=A_log,
         a=a.contiguous(),
@@ -275,5 +303,9 @@ def fused_sigmoid_gating_delta_rule_update(
         num_warps=num_warps,
         num_stages=num_stages,
     )
+    if _PROF and not torch.cuda.is_current_stream_capturing():
+        _end.record()
+        _PROF_PAIRS.append((_start, _end))
+        _maybe_log_delta_rule_profile()
     o = o.squeeze(0)
     return o, final_state

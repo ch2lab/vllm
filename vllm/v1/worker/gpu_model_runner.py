@@ -25,6 +25,46 @@ from vllm.compilation.breakable_cudagraph import (
     BreakableCUDAGraphWrapper,
     is_breakable_cudagraph_enabled,
 )
+
+# SM70 host-side decode-step timing (V1 runner). Gated by VLLM_SM70_STEPTIME=1.
+# Appends one CSV row per decode step to VLLM_SM70_STEPTIME_FILE (default
+# /tmp/sm70_step3.csv): exec/sampling host times + the inter-step dead time
+# (gap between end of sample_tokens and next execute_model).
+import os as _sm70_os
+_SM70_STEPTIME = int(_sm70_os.environ.get("VLLM_SM70_STEPTIME", "0"))
+_SM70_STEPFILE = _sm70_os.environ.get("VLLM_SM70_STEPTIME_FILE", "/tmp/sm70_step3.csv")
+_sm70_pid = _sm70_os.getpid()
+_sm70_t0 = None  # execute_model entry
+_sm70_t1 = None  # execute_model exit
+_sm70_t2 = None  # sample_tokens entry
+_sm70_t3 = None  # sample_tokens exit
+_sm70_tprev_end = None  # previous sample_tokens exit (for inter-step dead time)
+
+
+def _sm70_emit(ntok: int) -> None:
+    global _sm70_tprev_end
+    if not (_SM70_STEPTIME and _sm70_t0 is not None and _sm70_t2 is not None):
+        return
+    if ntok > 8:
+        _sm70_tprev_end = None
+        return  # prefill, reset inter-step tracking
+    def d(a, b):
+        return (b - a) * 1e3 if (a is not None and b is not None) else -1.0
+    dead = d(_sm70_tprev_end, _sm70_t0) if _sm70_tprev_end is not None else -1.0
+    row = (
+        f"{_sm70_pid},{ntok},"
+        f"{d(_sm70_t0, _sm70_t1):.2f},"  # execute_model host
+        f"{d(_sm70_t2, _sm70_t3):.2f},"  # sample_tokens host
+        f"{d(_sm70_t1, _sm70_t2):.2f},"  # exec->sample gap
+        f"{dead:.2f}"  # inter-step dead (prev sample end -> this exec start)
+    )
+    _sm70_tprev_end = _sm70_t3
+    try:
+        with open(_SM70_STEPFILE, "a") as _sm70_fh:
+            _sm70_fh.write(row + "\n")
+    except OSError:
+        pass
+
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.cuda_graph import CUDAGraphStat, CUDAGraphWrapper
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -4288,6 +4328,9 @@ class GPUModelRunner(
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: IntermediateTensors | None = None,
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
+        global _sm70_t0, _sm70_t1
+        if _SM70_STEPTIME:
+            _sm70_t0 = time.perf_counter()
         if self.execute_model_state is not None:
             raise RuntimeError(
                 "State error: sample_tokens() must be called "
@@ -4644,6 +4687,8 @@ class GPUModelRunner(
         if deferred_state_corrections_fn:
             deferred_state_corrections_fn()
 
+        if _SM70_STEPTIME:
+            _sm70_t1 = time.perf_counter()
         return None
 
     def _input_fits_in_drafter(
@@ -4665,6 +4710,9 @@ class GPUModelRunner(
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors:
+        global _sm70_t2, _sm70_t3
+        if _SM70_STEPTIME:
+            _sm70_t2 = time.perf_counter()
         if self.execute_model_state is None:
             kv_connector_output = self.kv_connector_output
             self.kv_connector_output = None
@@ -4902,6 +4950,9 @@ class GPUModelRunner(
                     routing_data=self.routed_experts_cpu[:total].numpy(),
                     slot_mapping=self.routed_experts_slot_mapping_cpu[:total].numpy(),
                 )
+            if _SM70_STEPTIME:
+                _sm70_t3 = time.perf_counter()
+                _sm70_emit(scheduler_output.total_num_scheduled_tokens)
             return output
 
         with record_function_or_nullcontext(
@@ -4943,6 +4994,9 @@ class GPUModelRunner(
                 async_output.async_copy_ready_event,
             )
 
+        if _SM70_STEPTIME:
+            _sm70_t3 = time.perf_counter()
+            _sm70_emit(scheduler_output.total_num_scheduled_tokens)
         return async_output
 
     def _pp_broadcast_prev_sampled_token_ids(

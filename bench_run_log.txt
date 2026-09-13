@@ -1,0 +1,316 @@
+  T01 already done, skipping
+  T02 already done, skipping
+  T03 already done, skipping
+
+============================================================
+  T04 4B KV=NVFP4 TP1
+============================================================
+  Prefill: 1301.6 tok/s, Decode: 52.0 tok/s
+  T05 already done, skipping
+  T06 already done, skipping
+  T07 already done, skipping
+
+============================================================
+  T08 4B-AWQ KV=NVFP4 TP1
+============================================================
+  Prefill: 1185.2 tok/s, Decode: 52.0 tok/s
+
+============================================================
+  T09 4B-FP8 KV=FP16 TP1
+============================================================
+  FAILED: (APIServer pid=996181) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T10 4B-FP8 KV=FP8 TP1
+============================================================
+  FAILED: (APIServer pid=996880) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T11 4B-FP8 KV=INT4 TP1
+============================================================
+  FAILED: (APIServer pid=997643) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T12 4B-FP8 KV=NVFP4 TP1
+============================================================
+  FAILED: (APIServer pid=998389) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+  T13 already done, skipping
+  T14 already done, skipping
+  T15 already done, skipping
+
+============================================================
+  T16 27B-AWQ KV=NVFP4 TP2
+============================================================
+  Prefill: 555.2 tok/s, Decode: 21.9 tok/s
+
+============================================================
+  T17 27B-AWQ-MTP KV=FP16 TP2+MTP4
+============================================================
+  Prefill: 685.9 tok/s, Decode: 62.1 tok/s
+
+============================================================
+  T18 27B-AWQ-MTP KV=FP8 TP2+MTP4
+============================================================
+  Prefill: 668.7 tok/s, Decode: 59.2 tok/s
+
+============================================================
+  T19 27B-AWQ-MTP KV=INT4 TP2+MTP4
+============================================================
+  Prefill: 653.4 tok/s, Decode: 15.4 tok/s
+
+============================================================
+  T20 27B-AWQ-MTP KV=NVFP4 TP2+MTP4
+============================================================
+  FAILED: (APIServer pid=1004348) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+  T21 already done, skipping
+  T22 already done, skipping
+  T23 already done, skipping
+
+============================================================
+  T24 27B-AWQ KV=NVFP4 PP2
+============================================================
+  Prefill: 304.3 tok/s, Decode: 11.8 tok/s
+
+============================================================
+  T25 35B-A3B-AWQ KV=FP16 TP2
+============================================================
+  FAILED: (APIServer pid=1006691) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T26 35B-A3B-AWQ KV=FP8 TP2
+============================================================
+  FAILED: (APIServer pid=1007795) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T27 35B-A3B-AWQ KV=INT4 TP2
+============================================================
+  FAILED: (APIServer pid=1008960) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T28 35B-A3B-AWQ KV=NVFP4 TP2
+============================================================
+  FAILED: (APIServer pid=1010202) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T29 35B-A3B-AWQ KV=FP16 TP2+MTP4
+============================================================
+  FAILED: (APIServer pid=1011295) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T30 35B-A3B-AWQ KV=FP8 TP2+MTP4
+============================================================
+  FAILED: (APIServer pid=1012658) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T31 35B-A3B-AWQ KV=INT4 TP2+MTP4
+============================================================
+  FAILED: (APIServer pid=1013762) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T32 35B-A3B-AWQ KV=NVFP4 TP2+MTP4
+============================================================
+  FAILED: (APIServer pid=1014927) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T33 35B-A3B-AWQ KV=FP16 PP2
+============================================================
+  FAILED: (APIServer pid=1016024) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T34 35B-A3B-AWQ KV=FP8 PP2
+============================================================
+  FAILED: (APIServer pid=1017035) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T35 35B-A3B-AWQ KV=INT4 PP2
+============================================================
+  FAILED: (APIServer pid=1018053) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T36 35B-A3B-AWQ KV=NVFP4 PP2
+============================================================
+  FAILED: (APIServer pid=1019086) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T37 27B-FP8 KV=FP16 TP2
+============================================================
+  FAILED: (APIServer pid=1020117) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T38 27B-FP8 KV=FP8 TP2
+============================================================
+  FAILED: (APIServer pid=1021165) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T39 27B-FP8 KV=INT4 TP2
+============================================================
+  FAILED: (APIServer pid=1022177) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T40 27B-FP8 KV=NVFP4 TP2
+============================================================
+  FAILED: (APIServer pid=1023354) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T41 27B-FP8 KV=FP16 PP2
+============================================================
+  FAILED: (APIServer pid=1024280) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T42 27B-FP8 KV=FP8 PP2
+============================================================
+  FAILED: (APIServer pid=1025166) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T43 27B-FP8 KV=INT4 PP2
+============================================================
+  FAILED: (APIServer pid=1026070) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T44 27B-FP8 KV=NVFP4 PP2
+============================================================
+  FAILED: (APIServer pid=1026966) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T45 Ornith-35B-FP8 KV=FP16 TP2
+============================================================
+  FAILED: (APIServer pid=1027858) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T46 Ornith-35B-FP8 KV=FP8 TP2
+============================================================
+  FAILED: (APIServer pid=1029077) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T47 Ornith-35B-FP8 KV=INT4 TP2
+============================================================
+  FAILED: (APIServer pid=1030135) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T48 Ornith-35B-FP8 KV=NVFP4 TP2
+============================================================
+  FAILED: (APIServer pid=1031176) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T49 Ornith-35B-FP8 KV=FP16 PP2
+============================================================
+  FAILED: (APIServer pid=1032216) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T50 Ornith-35B-FP8 KV=FP8 PP2
+============================================================
+  FAILED: (APIServer pid=1033199) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T51 Ornith-35B-FP8 KV=INT4 PP2
+============================================================
+  FAILED: (APIServer pid=1034237) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T52 Ornith-35B-FP8 KV=NVFP4 PP2
+============================================================
+  FAILED: (APIServer pid=1035271) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+
+============================================================
+  T53 27B-NVFP4-MTP KV=FP16 TP2
+============================================================
+  Prefill: 821.5 tok/s, Decode: 8.5 tok/s
+
+============================================================
+  T54 27B-NVFP4-MTP KV=FP8 TP2
+============================================================
+  Prefill: 797.7 tok/s, Decode: 8.2 tok/s
+
+============================================================
+  T55 27B-NVFP4-MTP KV=INT4 TP2
+============================================================
+  Prefill: 782.1 tok/s, Decode: 7.9 tok/s
+
+============================================================
+  T56 27B-NVFP4-MTP KV=NVFP4 TP2
+============================================================
+  Prefill: 608.7 tok/s, Decode: 8.2 tok/s
+
+============================================================
+  T57 27B-NVFP4-MTP KV=FP16 TP2+MTP4
+============================================================
+  Prefill: 781.4 tok/s, Decode: 27.8 tok/s
+
+============================================================
+  T58 27B-NVFP4-MTP KV=FP8 TP2+MTP4
+============================================================
+  Prefill: 757.6 tok/s, Decode: 27.5 tok/s
+
+============================================================
+  T59 27B-NVFP4-MTP KV=INT4 TP2+MTP4
+============================================================
+  Prefill: 742.2 tok/s, Decode: 9.1 tok/s
+
+============================================================
+  T60 27B-NVFP4-MTP KV=NVFP4 TP2+MTP4
+============================================================
+  Prefill: 580.4 tok/s, Decode: 7.5 tok/s
+
+======================================================================
+ID    Model              KV      Par   MTP  Prefill    Decode     Status
+----------------------------------------------------------------------
+T01   4B                 FP16    TP1   -    1909.1     59.3       OK
+T02   4B                 FP8     TP1   -    1838.4     57.7       OK
+T03   4B                 INT4    TP1   -    1602.7     50.7       OK
+T04   4B                 NVFP4   TP1   -    1301.6     52.0       OK
+T05   4B-AWQ             FP16    TP1   -    1686.3     58.5       OK
+T06   4B-AWQ             FP8     TP1   -    1629.0     56.3       OK
+T07   4B-AWQ             INT4    TP1   -    1480.5     50.1       OK
+T08   4B-AWQ             NVFP4   TP1   -    1185.2     52.0       OK
+T09   4B-FP8             FP16                                     FAIL: (APIServer pid=996181) RuntimeError: Eng
+T10   4B-FP8             FP8                                      FAIL: (APIServer pid=996880) RuntimeError: Eng
+T11   4B-FP8             INT4                                     FAIL: (APIServer pid=997643) RuntimeError: Eng
+T12   4B-FP8             NVFP4                                    FAIL: (APIServer pid=998389) RuntimeError: Eng
+T13   27B-AWQ            FP16    TP2   -    725.7      24.2       OK
+T14   27B-AWQ            FP8     TP2   -    708.7      23.6       OK
+T15   27B-AWQ            INT4    TP2   -    691.8      21.3       OK
+T16   27B-AWQ            NVFP4   TP2   -    555.2      21.9       OK
+T17   27B-AWQ-MTP        FP16    TP2   Y    685.9      62.1       OK
+T18   27B-AWQ-MTP        FP8     TP2   Y    668.7      59.2       OK
+T19   27B-AWQ-MTP        INT4    TP2   Y    653.4      15.4       OK
+T20   27B-AWQ-MTP        NVFP4                                    FAIL: (APIServer pid=1004348) RuntimeError: En
+T21   27B-AWQ            FP16    PP2   -    406.8      12.5       OK
+T22   27B-AWQ            FP8     PP2   -    397.0      12.3       OK
+T23   27B-AWQ            INT4    PP2   -    387.2      11.6       OK
+T24   27B-AWQ            NVFP4   PP2   -    304.3      11.8       OK
+T25   35B-A3B-AWQ        FP16                                     FAIL: (APIServer pid=1006691) RuntimeError: En
+T26   35B-A3B-AWQ        FP8                                      FAIL: (APIServer pid=1007795) RuntimeError: En
+T27   35B-A3B-AWQ        INT4                                     FAIL: (APIServer pid=1008960) RuntimeError: En
+T28   35B-A3B-AWQ        NVFP4                                    FAIL: (APIServer pid=1010202) RuntimeError: En
+T29   35B-A3B-AWQ        FP16                                     FAIL: (APIServer pid=1011295) RuntimeError: En
+T30   35B-A3B-AWQ        FP8                                      FAIL: (APIServer pid=1012658) RuntimeError: En
+T31   35B-A3B-AWQ        INT4                                     FAIL: (APIServer pid=1013762) RuntimeError: En
+T32   35B-A3B-AWQ        NVFP4                                    FAIL: (APIServer pid=1014927) RuntimeError: En
+T33   35B-A3B-AWQ        FP16                                     FAIL: (APIServer pid=1016024) RuntimeError: En
+T34   35B-A3B-AWQ        FP8                                      FAIL: (APIServer pid=1017035) RuntimeError: En
+T35   35B-A3B-AWQ        INT4                                     FAIL: (APIServer pid=1018053) RuntimeError: En
+T36   35B-A3B-AWQ        NVFP4                                    FAIL: (APIServer pid=1019086) RuntimeError: En
+T37   27B-FP8            FP16                                     FAIL: (APIServer pid=1020117) RuntimeError: En
+T38   27B-FP8            FP8                                      FAIL: (APIServer pid=1021165) RuntimeError: En
+T39   27B-FP8            INT4                                     FAIL: (APIServer pid=1022177) RuntimeError: En
+T40   27B-FP8            NVFP4                                    FAIL: (APIServer pid=1023354) RuntimeError: En
+T41   27B-FP8            FP16                                     FAIL: (APIServer pid=1024280) RuntimeError: En
+T42   27B-FP8            FP8                                      FAIL: (APIServer pid=1025166) RuntimeError: En
+T43   27B-FP8            INT4                                     FAIL: (APIServer pid=1026070) RuntimeError: En
+T44   27B-FP8            NVFP4                                    FAIL: (APIServer pid=1026966) RuntimeError: En
+T45   Ornith-35B-FP8     FP16                                     FAIL: (APIServer pid=1027858) RuntimeError: En
+T46   Ornith-35B-FP8     FP8                                      FAIL: (APIServer pid=1029077) RuntimeError: En
+T47   Ornith-35B-FP8     INT4                                     FAIL: (APIServer pid=1030135) RuntimeError: En
+T48   Ornith-35B-FP8     NVFP4                                    FAIL: (APIServer pid=1031176) RuntimeError: En
+T49   Ornith-35B-FP8     FP16                                     FAIL: (APIServer pid=1032216) RuntimeError: En
+T50   Ornith-35B-FP8     FP8                                      FAIL: (APIServer pid=1033199) RuntimeError: En
+T51   Ornith-35B-FP8     INT4                                     FAIL: (APIServer pid=1034237) RuntimeError: En
+T52   Ornith-35B-FP8     NVFP4                                    FAIL: (APIServer pid=1035271) RuntimeError: En
+T53   27B-NVFP4-MTP      FP16    TP2   -    821.5      8.5        OK
+T54   27B-NVFP4-MTP      FP8     TP2   -    797.7      8.2        OK
+T55   27B-NVFP4-MTP      INT4    TP2   -    782.1      7.9        OK
+T56   27B-NVFP4-MTP      NVFP4   TP2   -    608.7      8.2        OK
+T57   27B-NVFP4-MTP      FP16    TP2   Y    781.4      27.8       OK
+T58   27B-NVFP4-MTP      FP8     TP2   Y    757.6      27.5       OK
+T59   27B-NVFP4-MTP      INT4    TP2   Y    742.2      9.1        OK
+T60   27B-NVFP4-MTP      NVFP4   TP2   Y    580.4      7.5        OK

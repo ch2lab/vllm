@@ -25,6 +25,35 @@ void awq_gemm_sm70_out(torch::Tensor out, torch::Tensor _in_feats,
                        int64_t group_size, int64_t k_ld, int64_t q_ld,
                        bool gated_silu);
 
+// FP8 (block-128 scaled) entry points, same file.
+std::vector<torch::Tensor> fp8_sm70_prepare(torch::Tensor _kernel,
+                                            torch::Tensor _scaling_factors,
+                                            int64_t group_size,
+                                            bool interleave_gated_silu);
+
+void fp8_gemm_sm70_out(torch::Tensor out, torch::Tensor _in_feats,
+                       torch::Tensor _kernel, torch::Tensor _scaling_factors,
+                       int64_t group_size, int64_t k_ld, int64_t q_ld,
+                       bool gated_silu);
+
+void fp8_gemm_sm70_out_auto(torch::Tensor out, torch::Tensor _in_feats,
+                            torch::Tensor _kernel,
+                            torch::Tensor _scaling_factors);
+
+void fp8_gemm_sm70_out_meta(torch::Tensor out, torch::Tensor _in_feats,
+                            torch::Tensor _kernel, torch::Tensor _scaling_factors,
+                            torch::Tensor _meta, bool gated_silu);
+
+// SM70 prefill dequantize: unpack packed 4-bit/8-bit weights to fp16 so
+// the prefill can use cuBLAS GEMM instead of the fused WMMA kernel.
+void awq_sm70_dequantize_out(torch::Tensor out, torch::Tensor _kernel,
+                             torch::Tensor _scaling_factors,
+                             int64_t group_size);
+
+void fp8_sm70_dequantize_out(torch::Tensor out, torch::Tensor _kernel,
+                             torch::Tensor _scaling_factors,
+                             int64_t group_size);
+
 TORCH_LIBRARY_FRAGMENT(_sm70tm, m) {
   m.def("awq_sm70_prepare(Tensor _kernel, Tensor _scaling_factors, Tensor "
         "_zeros, int group_size, bool interleave_gated_silu) -> Tensor[]");
@@ -33,12 +62,32 @@ TORCH_LIBRARY_FRAGMENT(_sm70tm, m) {
   m.def("awq_gemm_sm70_out(Tensor(a!) out, Tensor _in_feats, Tensor _kernel, "
         "Tensor _scaling_factors, int group_size, int k_ld, int q_ld, "
         "bool gated_silu) -> ()");
+  m.def("fp8_sm70_prepare(Tensor _kernel, Tensor _scaling_factors, "
+        "int group_size, bool interleave_gated_silu) -> Tensor[]");
+  m.def("fp8_gemm_sm70_out(Tensor(a!) out, Tensor _in_feats, Tensor _kernel, "
+        "Tensor _scaling_factors, int group_size, int k_ld, int q_ld, "
+        "bool gated_silu) -> ()");
+  m.def("fp8_gemm_sm70_out_auto(Tensor(a!) out, Tensor _in_feats, "
+        "Tensor _kernel, Tensor _scaling_factors) -> ()");
+  m.def("fp8_gemm_sm70_out_meta(Tensor(a!) out, Tensor _in_feats, "
+        "Tensor _kernel, Tensor _scaling_factors, Tensor _meta, "
+        "bool gated_silu) -> ()");
+  m.def("awq_sm70_dequantize_out(Tensor(a!) out, Tensor _kernel, "
+        "Tensor _scaling_factors, int group_size) -> ()");
+  m.def("fp8_sm70_dequantize_out(Tensor(a!) out, Tensor _kernel, "
+        "Tensor _scaling_factors, int group_size) -> ()");
 }
 
 TORCH_LIBRARY_IMPL(_sm70tm, CUDA, m) {
   m.impl("awq_sm70_prepare", &awq_sm70_prepare);
   m.impl("awq_gemm_sm70", &awq_gemm_sm70);
   m.impl("awq_gemm_sm70_out", &awq_gemm_sm70_out);
+  m.impl("fp8_sm70_prepare", &fp8_sm70_prepare);
+  m.impl("fp8_gemm_sm70_out", &fp8_gemm_sm70_out);
+  m.impl("fp8_gemm_sm70_out_auto", &fp8_gemm_sm70_out_auto);
+  m.impl("fp8_gemm_sm70_out_meta", &fp8_gemm_sm70_out_meta);
+  m.impl("awq_sm70_dequantize_out", &awq_sm70_dequantize_out);
+  m.impl("fp8_sm70_dequantize_out", &fp8_sm70_dequantize_out);
 }
 
 // Provides PyInit_<name> so the extension can be imported as a Python module.

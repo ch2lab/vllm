@@ -78,6 +78,10 @@ logger = init_logger(__name__)
 # Switchable for A/B; turbomind requires the _sm70_turbomind_C ext.
 SM70_AWQ_BACKEND = os.getenv("VLLM_SM70_AWQ_BACKEND", "turbomind").lower()
 
+# Shared workspace for SM70 AWQ prefill dequantize (one per device, reused
+# across layers to avoid OOM from per-layer fp16 weight buffers).
+_sm70_awq_dequant_ws: dict[torch.device, torch.Tensor] = {}
+
 
 def _sm70tm_available() -> bool:
     try:
@@ -971,6 +975,30 @@ class AutoAWQLinearMethod(BaseAWQLinearMethod):
         if tm is not None:
             tm_weight, tm_scales, group_size, k_ld, q_ld = tm
             n_out = tm_weight.shape[1] * pack_factor
+            # SM70 prefill: for large M, dequantize the weight once to fp16
+            # and use cuBLAS GEMM (torch.mm) which achieves ~80% MFU vs
+            # ~40% for the fused WMMA kernel.
+            _sm70_dequant = getattr(
+                torch.ops._sm70tm, "awq_sm70_dequantize_out", None
+            )
+            if (
+                _sm70_dequant is not None
+                and reshaped_x.shape[0] >= 256
+                and reshaped_x.dtype == torch.float16
+            ):
+                k = reshaped_x.shape[1]
+                _ws = _sm70_awq_dequant_ws.get(reshaped_x.device)
+                need = k * n_out
+                if _ws is None or _ws.numel() < need:
+                    _ws = torch.empty(need, dtype=torch.float16,
+                                      device=reshaped_x.device)
+                    _sm70_awq_dequant_ws[reshaped_x.device] = _ws
+                ws = _ws[:need].view(k, n_out)
+                _sm70_dequant(ws, tm_weight, tm_scales, group_size)
+                out = torch.mm(reshaped_x, ws)
+                if bias is not None:
+                    out.add_(bias)
+                return out.reshape(x.shape[:-1] + (n_out,))
             out = torch.empty(
                 reshaped_x.shape[0],
                 n_out,

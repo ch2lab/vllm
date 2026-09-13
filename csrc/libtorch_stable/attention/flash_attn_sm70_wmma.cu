@@ -19,14 +19,25 @@ __device__ __forceinline__ half fp8e4m3_to_half_scaled(uint8_t x,
   return __float2half(val);
 }
 
+__device__ __forceinline__ half fp8e5m2_to_half_scaled(uint8_t x,
+                                                       float scale) {
+  __half_raw hr = __nv_cvt_fp8_to_halfraw(x, __NV_E5M2);
+  float val = __half2float(*reinterpret_cast<half*>(&hr)) * scale;
+  return __float2half(val);
+}
+
 // Flash-attention prefill kernel for SM70
 // BM=16, BN=32, HD=128
 // Shared memory: ~27KB (under 48KB SM70 limit)
 // Grid: (ceil(Sq/BM), num_heads, batch), Block: 128 threads
 
-constexpr int BM = 16;
-constexpr int BN = 32;
-constexpr int MAX_PARTITIONS = 16;
+ constexpr int BM = 16;
+ constexpr int BN = 32;
+// Cap on the KV partition count for the decode path. Each partition is a
+// CTA wave slot: with 2 KV heads x P partitions the grid must fill the 70
+// V100 SMs. P=128 (up to 256 CTAs) with small segments maximizes latency
+// hiding for the serial per-tile dequant/QK/PV chain at long contexts.
+constexpr int MAX_PARTITIONS = 128;
 constexpr int HD = 128;
 
 template <bool FP8_KV>
@@ -243,7 +254,7 @@ __device__ __constant__ float NVFP4_LUT[16] = {
     0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
 
-// KV_MODE: 0 = FP16, 1 = FP8 (e4m3, dequant inline), 2 = INT4, 3 = NVFP4
+// KV_MODE: 0 = FP16, 1 = FP8 e4m3, 2 = INT4, 3 = NVFP4, 4 = FP8 e5m2
 // INT4: 2 nibbles/byte, slot [K(HD/2 B) | V(HD/2 B)], symmetric (nib-8)*scale
 // NVFP4: upstream-compatible layout: K/V are separate head rows
 //        (V head = kv_head + num_kv_heads), each slot is
@@ -325,7 +336,14 @@ void flash_attn_sm70_paged_kernel(
   __shared__ half sQ[BM][HD + 8];
   __shared__ half sKV[BN][HD + 8];
   __shared__ float sS[BM][BN];
-  __shared__ float sO[BM][HD];
+  // sO is aliased onto sKV's backing memory (not a separate allocation).
+  // The K tile in sKV is fully consumed by S=Q·K before the rescale writes
+  // sO, and V is reloaded into sKV only after the rescale reloads o_frag —
+  // so sO and the live K/V never coexist. This removes the separate
+  // BM*HD*4 (=16KB at HD=256) allocation so the CTA's smem fits 3/SM.
+  static_assert(sizeof(sKV) >= (size_t)BM * HD * sizeof(float),
+                "sKV must be large enough to alias the sO accumulator");
+  float* const sO = reinterpret_cast<float*>(sKV);
   __shared__ half sP[BM][BN + 8];
   __shared__ float s_max[BM];
   __shared__ float s_sum[BM];
@@ -359,7 +377,38 @@ void flash_attn_sm70_paged_kernel(
   int kv_end = causal ? min(kv_len, q_start + BM + q_offset) : kv_len;
   // Parallel KV partition: this block handles [seg_start, seg_end) of the
   // visible KV. num_partitions==1 keeps the original single-block scan.
-  const int seg_len = (kv_end + num_partitions - 1) / num_partitions;
+  // Graph-safe dynamic partitioning: the effective partition count is
+  // derived from the live KV length (device data), so a graph captured
+  // with the max grid still scans short contexts with ~1 partition while
+  // long contexts keep the full split. Skipped partitions write empty
+  // partials (max=-inf) which the log-sum-exp merge zero-weights.
+  int P_eff = num_partitions;
+  if (num_partitions > 1) {
+    const int SEG_TOKENS = 1024;
+    P_eff = min(num_partitions,
+                max(1, (kv_end + SEG_TOKENS - 1) / SEG_TOKENS));
+  }
+  if (num_partitions > 1 && partition_idx >= P_eff) {
+    const int part_heads_e = xqa ? num_kv_heads : num_heads;
+    const int pidx_e =
+        (seq * num_partitions + partition_idx) * part_heads_e + head_idx;
+    half* op_e = o_partial + (int64_t)pidx_e * BM * HD;
+    float* mp_e = max_partial + (int64_t)pidx_e * BM;
+    float* sp_e = sum_partial + (int64_t)pidx_e * BM;
+    const int q_per_kv_e = num_heads / num_kv_heads;
+    for (int idx = threadIdx.x; idx < BM * HD; idx += 128) {
+      const int m = idx / HD;
+      if (xqa ? (m < q_per_kv_e) : (q_start + m < Sq))
+        op_e[idx] = __float2half(0.0f);
+    }
+    for (int m = threadIdx.x; m < BM; m += 128)
+      if (xqa ? (m < q_per_kv_e) : (q_start + m < Sq)) {
+        mp_e[m] = -1e30f;
+        sp_e[m] = 0.0f;
+      }
+    return;
+  }
+  const int seg_len = (kv_end + P_eff - 1) / P_eff;
   const int seg_start = min(partition_idx * seg_len, kv_end);
   const int seg_end = min(kv_end, seg_start + seg_len);
 
@@ -367,7 +416,7 @@ void flash_attn_sm70_paged_kernel(
     int actual_bn = min(BN, kv_end - kv_start);
 
     // Load K tile from paged cache (vectorized: 8 elements per load)
-    if constexpr (KV_MODE == 1) {
+    if constexpr (KV_MODE == 1 || KV_MODE == 4) {
       for (int chunk = threadIdx.x; chunk < BN * (HD / 8); chunk += 128) {
         int n = chunk / (HD / 8), d8 = (chunk % (HD / 8)) * 8;
         int gkv = kv_start + n;
@@ -380,7 +429,9 @@ void flash_attn_sm70_paged_kernel(
           const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&raw);
           #pragma unroll
           for (int i = 0; i < 8; i++)
-            sKV[n][d8 + i] = fp8e4m3_to_half_scaled(bytes[i], k_scale);
+            sKV[n][d8 + i] = (KV_MODE == 4)
+                ? fp8e5m2_to_half_scaled(bytes[i], k_scale)
+                : fp8e4m3_to_half_scaled(bytes[i], k_scale);
         } else {
           #pragma unroll
           for (int i = 0; i < 8; i++) sKV[n][d8 + i] = __float2half(0.0f);
@@ -506,20 +557,21 @@ void flash_attn_sm70_paged_kernel(
 
     #pragma unroll
     for (int dt = 0; dt < TILES_PER_WARP; dt++)
-      wmma::store_matrix_sync(&sO[0][warp_id * TILES_PER_WARP * 16 + dt * 16],
-                              o_frag[dt], HD, wmma::mem_row_major);
+      wmma::store_matrix_sync(
+          sO + (warp_id * TILES_PER_WARP * 16 + dt * 16),
+          o_frag[dt], HD, wmma::mem_row_major);
     __syncthreads();
     for (int idx = threadIdx.x; idx < BM * HD; idx += 128)
-      sO[idx / HD][idx % HD] *= s_rescale[idx / HD];
+      sO[idx] *= s_rescale[idx / HD];
     __syncthreads();
     #pragma unroll
     for (int dt = 0; dt < TILES_PER_WARP; dt++)
-      wmma::load_matrix_sync(o_frag[dt],
-                             &sO[0][warp_id * TILES_PER_WARP * 16 + dt * 16],
-                             HD, wmma::mem_row_major);
+      wmma::load_matrix_sync(
+          o_frag[dt], sO + (warp_id * TILES_PER_WARP * 16 + dt * 16), HD,
+          wmma::mem_row_major);
 
     // Load V tile from paged cache (vectorized, V at offset HD)
-    if constexpr (KV_MODE == 1) {
+    if constexpr (KV_MODE == 1 || KV_MODE == 4) {
       for (int chunk = threadIdx.x; chunk < BN * (HD / 8); chunk += 128) {
         int n = chunk / (HD / 8), d8 = (chunk % (HD / 8)) * 8;
         int gkv = kv_start + n;
@@ -532,7 +584,9 @@ void flash_attn_sm70_paged_kernel(
           const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&raw);
           #pragma unroll
           for (int i = 0; i < 8; i++)
-            sKV[n][d8 + i] = fp8e4m3_to_half_scaled(bytes[i], v_scale);
+            sKV[n][d8 + i] = (KV_MODE == 4)
+                ? fp8e5m2_to_half_scaled(bytes[i], v_scale)
+                : fp8e4m3_to_half_scaled(bytes[i], v_scale);
         } else {
           #pragma unroll
           for (int i = 0; i < 8; i++) sKV[n][d8 + i] = __float2half(0.0f);
@@ -630,8 +684,9 @@ void flash_attn_sm70_paged_kernel(
 
   #pragma unroll
   for (int dt = 0; dt < TILES_PER_WARP; dt++)
-    wmma::store_matrix_sync(&sO[0][warp_id * TILES_PER_WARP * 16 + dt * 16],
-                            o_frag[dt], HD, wmma::mem_row_major);
+    wmma::store_matrix_sync(
+        sO + (warp_id * TILES_PER_WARP * 16 + dt * 16),
+        o_frag[dt], HD, wmma::mem_row_major);
   __syncthreads();
 
   for (int idx = threadIdx.x; idx < BM * HD; idx += 128) {
@@ -641,14 +696,14 @@ void flash_attn_sm70_paged_kernel(
       if (m < q_per_kv) {
         float sum = s_sum[m];
         o_tile[m * HD + d] =
-            __float2half(sum > 0.0f ? sO[m][d] / sum : 0.0f);
+            __float2half(sum > 0.0f ? sO[m * HD + d] / sum : 0.0f);
       }
     } else {
       int gq = q_start + m;
       if (gq < Sq) {
         float sum = s_sum[m];
         o_tile[m * q_row_stride + d] =
-            __float2half(sum > 0.0f ? sO[m][d] / sum : 0.0f);
+            __float2half(sum > 0.0f ? sO[m * HD + d] / sum : 0.0f);
       }
     }
   }
@@ -662,10 +717,17 @@ void flash_attn_sm70_paged_kernel(
     float* mp = max_partial + (int64_t)pidx * BM;
     float* sp = sum_partial + (int64_t)pidx * BM;
     const int q_per_kv = num_heads / num_kv_heads;
+    // sO holds the pre-last-tile intermediate; stage the final registers.
+    #pragma unroll
+    for (int dt = 0; dt < TILES_PER_WARP; dt++)
+      wmma::store_matrix_sync(
+          sO + (warp_id * TILES_PER_WARP * 16 + dt * 16),
+          o_frag[dt], HD, wmma::mem_row_major);
+    __syncthreads();
     for (int idx = threadIdx.x; idx < BM * HD; idx += 128) {
       int m = idx / HD, d = idx % HD;
       if (xqa ? (m < q_per_kv) : (q_start + m < Sq))
-        op[m * HD + d] = __float2half(sO[m][d]);
+        op[m * HD + d] = __float2half(sO[m * HD + d]);
     }
     for (int m = threadIdx.x; m < BM; m += 128)
       if (xqa ? (m < q_per_kv) : (q_start + m < Sq)) {
@@ -692,64 +754,75 @@ void flash_attn_sm70_decode_merge_kernel(
   const int Sq = query_start_loc[seq + 1] - q_base;
   if (q_start >= Sq) return;
 
+  // Log-sum-exp merge of the P partition partials. The merge is independent
+  // of the partition count (no fixed-size arrays), so P may be raised to
+  // fill the V100 SMs. Each thread owns a contiguous D chunk of one query
+  // row; per-row weights are recomputed per thread from the (L1-hot)
+  // max/sum partials, avoiding shared memory entirely.
+  const int q_per_kv = num_heads / num_kv_heads;
   if (xqa) {
-    // XQA: this block produces one query head. Its partial lives under the
-    // shared KV head, at row m = head_idx % q_per_kv.
-    const int q_per_kv = num_heads / num_kv_heads;
+    // XQA: one query head per block; its partial lives under the shared KV
+    // head, at row m = head_idx % q_per_kv. One D element per thread
+    // (HD == 128 == blockDim).
     const int kv_head = head_idx / q_per_kv;
     const int m = head_idx % q_per_kv;
     const int gq = q_start;
-    float global_max = -1e30f;
-    int pidx[MAX_PARTITIONS];
+    float gmax = -1e30f;
     for (int p = 0; p < num_partitions; p++) {
-      pidx[p] = (seq * num_partitions + p) * num_kv_heads + kv_head;
-      global_max = fmaxf(global_max, max_partial[pidx[p] * BM + m]);
+      const int pidx = (seq * num_partitions + p) * num_kv_heads + kv_head;
+      gmax = fmaxf(gmax, max_partial[pidx * BM + m]);
     }
-    float den = 0.0f;
-    float w[MAX_PARTITIONS];
-    for (int p = 0; p < num_partitions; p++) {
-      w[p] = __expf(max_partial[pidx[p] * BM + m] - global_max);
-      den += w[p] * sum_partial[pidx[p] * BM + m];
-    }
-    const float inv = den > 0.0f ? 1.0f / den : 0.0f;
+    const half* op_row =
+        o_partial + ((int64_t)((seq * num_partitions) * num_kv_heads + kv_head)
+                       * BM +
+                     m) *
+                    HD;
     half* o = O + ((int64_t)(q_base + gq) * num_heads + head_idx) * HD;
-    for (int d = 0; d < HD; d++) {
-      float num_d = 0.0f;
-      for (int p = 0; p < num_partitions; p++)
-        num_d += w[p] * __half2float(
-            o_partial[((int64_t)pidx[p] * BM + m) * HD + d]);
-      o[d] = __float2half(num_d * inv);
+    const int64_t part_stride = (int64_t)num_kv_heads * BM * HD;
+    for (int d = threadIdx.x; d < HD; d += blockDim.x) {
+      float den = 0.0f, num = 0.0f;
+      for (int p = 0; p < num_partitions; p++) {
+        const int pidx =
+            ((seq * num_partitions + p) * num_kv_heads + kv_head) * BM + m;
+        const float w = __expf(max_partial[pidx] - gmax);
+        den += w * sum_partial[pidx];
+        num += w * __half2float(op_row[(int64_t)p * part_stride + d]);
+      }
+      o[d] = __float2half((den > 0.0f ? num / den : 0.0f));
     }
     return;
   }
 
-  for (int gm = 0; gm < BM; gm++) {
-    const int gq = q_start + gm;
-    if (gq >= Sq) break;
-    float global_max = -1e30f;
-    for (int p = 0; p < num_partitions; p++) {
-      const int pidx = (seq * num_partitions + p) * num_heads + head_idx;
-      global_max = fmaxf(global_max, max_partial[pidx * BM + gm]);
-    }
-    float den = 0.0f;
-    float w[MAX_PARTITIONS];
-    for (int p = 0; p < num_partitions; p++) {
-      const int pidx = (seq * num_partitions + p) * num_heads + head_idx;
-      w[p] = __expf(max_partial[pidx * BM + gm] - global_max);
-      den += w[p] * sum_partial[pidx * BM + gm];
-    }
-    const float inv = den > 0.0f ? 1.0f / den : 0.0f;
-    half* o = O + ((int64_t)(q_base + gq) * num_heads + head_idx) * HD;
-    for (int d = 0; d < HD; d++) {
-      float num_d = 0.0f;
-      for (int p = 0; p < num_partitions; p++) {
-        const int pidx = (seq * num_partitions + p) * num_heads + head_idx;
-        num_d += w[p] * __half2float(
-            o_partial[((int64_t)pidx * BM + gm) * HD + d]);
-      }
-      o[d] = __float2half(num_d * inv);
-    }
+  // Batched: 128 threads = BM(16) rows x 8 chunks of HD/8-wide D. Thread t
+  // owns row gm = t/8 and D range [ (t%8)*(HD/8), +HD/8 ).
+  const int gm = threadIdx.x / 8;
+  const int gq = q_start + gm;
+  if (gq >= Sq) return;
+  const int chunk = HD / 8;
+  const int d0 = (threadIdx.x % 8) * chunk;
+  float gmax = -1e30f;
+  for (int p = 0; p < num_partitions; p++) {
+    const int pidx = (seq * num_partitions + p) * num_heads + head_idx;
+    gmax = fmaxf(gmax, max_partial[pidx * BM + gm]);
   }
+  float den = 0.0f;
+  float num[32];  // HD/8 with HD <= 256
+  #pragma unroll
+  for (int i = 0; i < 32; i++) num[i] = 0.0f;
+  const int64_t part_stride = (int64_t)num_heads * BM * HD;
+  const int64_t op_base =
+      ((int64_t)seq * num_partitions * num_heads + head_idx) * BM * HD +
+      gm * HD + d0;
+  for (int p = 0; p < num_partitions; p++) {
+    const int pidx = (seq * num_partitions + p) * num_heads + head_idx;
+    const float w = __expf(max_partial[pidx * BM + gm] - gmax);
+    den += w * sum_partial[pidx * BM + gm];
+    const half* op = o_partial + op_base + (int64_t)p * part_stride;
+    for (int i = 0; i < chunk; i++) num[i] += w * __half2float(op[i]);
+  }
+  const float inv = den > 0.0f ? 1.0f / den : 0.0f;
+  half* o = O + ((int64_t)(q_base + gq) * num_heads + head_idx) * HD + d0;
+  for (int i = 0; i < chunk; i++) o[i] = __float2half(num[i] * inv);
 }
 
 }  // namespace sm70_attn
@@ -769,8 +842,11 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
   int max_blocks = block_table.size(1);
   int mode = (int)kv_mode;
   if (mode == 0) mode = (kv_cache.scalar_type() != Q.scalar_type()) ? 1 : 0;
+  if (mode == 3) num_kv_heads /= 2;  // nvfp4: dim1 holds K rows + V rows
   const int BM = vllm::sm70_attn::BM;
-  const int P = (int)num_partitions;
+  int P = (int)num_partitions;
+  if (P > vllm::sm70_attn::MAX_PARTITIONS) P = vllm::sm70_attn::MAX_PARTITIONS;
+  if (P < 1) P = 1;
   const int part_heads = (int)xqa ? num_kv_heads : H;
 
   const torch::stable::accelerator::DeviceGuard device_guard(
@@ -807,7 +883,8 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
         P, reinterpret_cast<half*>(o_partial.mutable_data_ptr<torch::headeronly::Half>()), \
         max_partial.mutable_data_ptr<float>(), sum_partial.mutable_data_ptr<float>(), \
         (int)xqa); \
-    vllm::sm70_attn::flash_attn_sm70_decode_merge_kernel \
+    if (P > 1) \
+      vllm::sm70_attn::flash_attn_sm70_decode_merge_kernel \
         <<<mgrid, 128, 0, stream>>>( \
         reinterpret_cast<const half*>(o_partial.mutable_data_ptr<torch::headeronly::Half>()), \
         max_partial.mutable_data_ptr<float>(), sum_partial.mutable_data_ptr<float>(), \
@@ -818,11 +895,13 @@ torch::stable::Tensor flash_attn_sm70_decode_partitioned(
   if (head_dim == 128) {
     if (mode == 2) { LAUNCH_PARTED(2, 128); }
     else if (mode == 3) { LAUNCH_PARTED(3, 128); }
+    else if (mode == 4) { LAUNCH_PARTED(4, 128); }
     else if (mode == 1) { LAUNCH_PARTED(1, 128); }
     else { LAUNCH_PARTED(0, 128); }
   } else {
     if (mode == 2) { LAUNCH_PARTED(2, 256); }
     else if (mode == 3) { LAUNCH_PARTED(3, 256); }
+    else if (mode == 4) { LAUNCH_PARTED(4, 256); }
     else if (mode == 1) { LAUNCH_PARTED(1, 256); }
     else { LAUNCH_PARTED(0, 256); }
   }
@@ -893,6 +972,7 @@ torch::stable::Tensor flash_attn_sm70_prefill_paged_batched(
   int max_blocks = block_table.size(1);
   int mode = (int)kv_mode;
   if (mode == 0) mode = (kv_cache.scalar_type() != Q.scalar_type()) ? 1 : 0;
+  if (mode == 3) num_kv_heads /= 2;  // nvfp4: dim1 holds K rows + V rows
 
   const torch::stable::accelerator::DeviceGuard device_guard(
       Q.get_device_index());
@@ -921,6 +1001,7 @@ torch::stable::Tensor flash_attn_sm70_prefill_paged_batched(
   #define DISPATCH_BATCHED(HD_VAL) \
     if (mode == 2) { LAUNCH_BATCHED_KERNEL(2, HD_VAL) } \
     else if (mode == 3) { LAUNCH_BATCHED_KERNEL(3, HD_VAL) } \
+    else if (mode == 4) { LAUNCH_BATCHED_KERNEL(4, HD_VAL) } \
     else if (mode == 1) { LAUNCH_BATCHED_KERNEL(1, HD_VAL) } \
     else { LAUNCH_BATCHED_KERNEL(0, HD_VAL) }
 
@@ -1093,8 +1174,9 @@ void fla_kkt_kernel(
     int n = idx % FLA_BT;
     int gm = i_tc * FLA_BT + m;
     int gn = i_tc * FLA_BT + n;
+    if (gm >= T) continue;
     float val = 0.0f;
-    if (gm < T && gn < T && gm > gn)
+    if (gn < T && gm > gn)
       val = sA[m][n] * sBeta[m] * __expf(sG[m] - sG[n]);
     A_head[gm * (H * FLA_BT) + n] = val;
   }
@@ -1357,6 +1439,267 @@ std::tuple<torch::stable::Tensor, torch::stable::Tensor> fla_wy_sm70(
   return {w, u};
 }
 
+// chunk_o kernel: o = scale * (exp(g) * (q @ h^T) + tril(exp(g_m - g_n) *
+// (q @ k^T)) @ v).  Replaces Triton chunk_fwd_kernel_o (tl.dot does not
+// emit WMMA on SM70).
+// Grid: (NT, H, V/64), Block: 128 (4 warps).  Each warp owns 16 rows of
+// the chunk; all 3 matmuls run on 16x16x16 WMMA.  Shared ~76KB.
+namespace vllm {
+namespace sm70_fla {
+
+constexpr int CO_BT = 64;
+constexpr int CO_BV = 64;
+constexpr int CO_BK = 128;
+constexpr int CO_SQK = CO_BK + 8;   // padded stride for q/k/h tiles
+constexpr int CO_SV = CO_BV + 8;    // padded stride for v/Ag tiles
+
+__global__ __launch_bounds__(128, 1)
+void fla_chunk_o_kernel(
+    const half* __restrict__ q,   // [T_total, Hg, K]
+    const half* __restrict__ k,   // [T_total, Hg, K]
+    const half* __restrict__ v,   // [T_total, H, V]
+    const half* __restrict__ h,   // [NT_total, H, V, K]
+    const half* __restrict__ g,   // [T_total, H] chunk-local cumsum
+    half* __restrict__ o,         // [T_total, H, V]
+    const int* __restrict__ cu_seqlens,
+    const int* __restrict__ chunk_indices,
+    int H, int Hg, int K, int V, float scale) {
+  const int i_t = blockIdx.x;
+  const int i_h = blockIdx.y;
+  const int i_v = blockIdx.z;
+
+  const int i_n = chunk_indices[i_t * 2];
+  const int i_tc = chunk_indices[i_t * 2 + 1];
+  const int bos = cu_seqlens[i_n];
+  const int eos = cu_seqlens[i_n + 1];
+  const int T = eos - bos;
+
+  const int hg = i_h / (H / Hg);
+  const int HgK = Hg * K;
+  const int HV = H * V;
+
+  const half* q_head = q + (size_t)bos * HgK + hg * K;
+  const half* k_head = k + (size_t)bos * HgK + hg * K;
+  const half* v_head = v + (size_t)bos * HV + i_h * V + i_v * CO_BV;
+  const half* g_head = g + (size_t)bos * H + i_h;
+  const half* h_ch = h + ((size_t)i_t * H + i_h) * V * K + i_v * CO_BV * K;
+  half* o_head = o + (size_t)bos * HV + i_h * V + i_v * CO_BV;
+
+  const int warp_id = threadIdx.x / 32;
+  const int m_base = warp_id * 16;
+
+  // Shared budget (~42KB): sQ holds q (gated in place after pass 1), sB is
+  // reused for k tiles, h tiles, v tile and the final result.
+  __shared__ half sQ[CO_BT][CO_SQK];
+  __shared__ half sB[CO_BT][CO_SQK];
+  __shared__ half sA[CO_BT][CO_BT];
+  __shared__ float sG[CO_BT];
+
+  for (int idx = threadIdx.x; idx < CO_BT; idx += 128) {
+    const int gt = i_tc * CO_BT + idx;
+    sG[idx] = (gt < T) ? __half2float(g_head[(size_t)gt * H]) : -1e30f;
+  }
+  for (int idx = threadIdx.x; idx < CO_BT * CO_BK; idx += 128) {
+    const int t = idx / CO_BK;
+    const int d = idx % CO_BK;
+    const int gt = i_tc * CO_BT + t;
+    sQ[t][d] = (gt < T && d < K) ? q_head[(size_t)gt * HgK + d]
+                                 : __float2half(0.0f);
+  }
+  __syncthreads();
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_A[4];
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_o[4];
+#pragma unroll
+  for (int i = 0; i < 4; i++) {
+    wmma::fill_fragment(acc_A[i], 0.0f);
+    wmma::fill_fragment(acc_o[i], 0.0f);
+  }
+
+  // Pass 1: A = q @ k^T (ungated).
+  for (int k_base = 0; k_base < K; k_base += CO_BK) {
+    const int actual_BK = min(CO_BK, K - k_base);
+    for (int idx = threadIdx.x; idx < CO_BT * CO_BK; idx += 128) {
+      const int t = idx / CO_BK;
+      const int d = idx % CO_BK;
+      const int gt = i_tc * CO_BT + t;
+      sB[t][d] = (gt < T && d < actual_BK)
+                     ? k_head[(size_t)gt * HgK + k_base + d]
+                     : __float2half(0.0f);
+    }
+    __syncthreads();
+    const int n_k_tiles = (actual_BK + 15) / 16;
+    for (int kt = 0; kt < n_k_tiles; kt++) {
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> fq;
+      wmma::load_matrix_sync(fq, &sQ[m_base][kt * 16], CO_SQK);
+#pragma unroll
+      for (int nt = 0; nt < 4; nt++) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> fb;
+        wmma::load_matrix_sync(fb, &sB[nt * 16][kt * 16], CO_SQK);
+        wmma::mma_sync(acc_A[nt], fq, fb, acc_A[nt]);
+      }
+    }
+    __syncthreads();
+  }
+
+  // Gate q rows in place: inter-chunk term = (q*exp(g)) @ h^T.
+  for (int idx = threadIdx.x; idx < CO_BT * CO_BK; idx += 128) {
+    const int t = idx / CO_BK;
+    const int d = idx % CO_BK;
+    if (d < K)
+      sQ[t][d] = __float2half(__half2float(sQ[t][d]) * __expf(sG[t]));
+  }
+  __syncthreads();
+
+  // Pass 2: o_inter = (q*exp(g)) @ h^T.
+  for (int k_base = 0; k_base < K; k_base += CO_BK) {
+    const int actual_BK = min(CO_BK, K - k_base);
+    for (int idx = threadIdx.x; idx < CO_BT * CO_BK; idx += 128) {
+      const int r = idx / CO_BK;
+      const int d = idx % CO_BK;
+      sB[r][d] = (d < actual_BK) ? h_ch[(size_t)r * K + k_base + d]
+                                 : __float2half(0.0f);
+    }
+    __syncthreads();
+    const int n_k_tiles = (actual_BK + 15) / 16;
+    for (int kt = 0; kt < n_k_tiles; kt++) {
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> fq;
+      wmma::load_matrix_sync(fq, &sQ[m_base][kt * 16], CO_SQK);
+#pragma unroll
+      for (int nt = 0; nt < 4; nt++) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> fb;
+        wmma::load_matrix_sync(fb, &sB[nt * 16][kt * 16], CO_SQK);
+        wmma::mma_sync(acc_o[nt], fq, fb, acc_o[nt]);
+      }
+    }
+    __syncthreads();
+  }
+
+  // Store ungated A as fp32 over sB (h tiles are dead; 64 rows x 66 float
+  // = 16896 B matches sB exactly).
+  float (*sBf)[66] = reinterpret_cast<float (*)[66]>(sB);
+#pragma unroll
+  for (int nt = 0; nt < 4; nt++)
+    wmma::store_matrix_sync(&sBf[m_base][nt * 16], acc_A[nt], 66,
+                            wmma::mem_row_major);
+  __syncthreads();
+
+  // Pairwise gating + lower-triangular mask -> fp16 sA.
+  for (int idx = threadIdx.x; idx < CO_BT * CO_BT; idx += 128) {
+    const int m = idx / CO_BT;
+    const int n = idx % CO_BT;
+    const int gm = i_tc * CO_BT + m;
+    const int gn = i_tc * CO_BT + n;
+    float val = 0.0f;
+    if (gm < T && gn < T && m >= n)
+      val = sBf[m][n] * __expf(sG[m] - sG[n]);
+    sA[m][n] = __float2half(val);
+  }
+  __syncthreads();
+
+  // Load v tile into sB (safe: A float view fully consumed).
+  for (int idx = threadIdx.x; idx < CO_BT * CO_BV; idx += 128) {
+    const int t = idx / CO_BV;
+    const int d = idx % CO_BV;
+    const int gt = i_tc * CO_BT + t;
+    sB[t][d] = (gt < T) ? v_head[(size_t)gt * HV + d] : __float2half(0.0f);
+  }
+  __syncthreads();
+
+  // acc_A is dead; reuse for A @ v: o[m, d] = sum_n A[m, n] * v[n, d].
+  // Each of the 4 accumulators holds one d-tile (16 cols); the inner loop
+  // sums the 4 n-tiles of A/v.
+#pragma unroll
+  for (int i = 0; i < 4; i++) wmma::fill_fragment(acc_A[i], 0.0f);
+  for (int nt = 0; nt < CO_BT / 16; nt++) {
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> fa;
+    wmma::load_matrix_sync(fa, &sA[m_base][nt * 16], CO_BT);
+#pragma unroll
+    for (int dt = 0; dt < 4; dt++) {
+      wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> fv;
+      wmma::load_matrix_sync(fv, &sB[nt * 16][dt * 16], CO_SQK);
+      wmma::mma_sync(acc_A[dt], fa, fv, acc_A[dt]);
+    }
+  }
+  // Combine both terms (same fragment shape: elementwise add) and store
+  // the fp32 result over sQ (dead after pass 2).
+  float (*sQf)[64] = reinterpret_cast<float (*)[64]>(sQ);
+#pragma unroll
+  for (int vt = 0; vt < 4; vt++) {
+#pragma unroll
+    for (int e = 0; e < acc_o[vt].num_elements; e++)
+      acc_o[vt].x[e] += acc_A[vt].x[e];
+    wmma::store_matrix_sync(&sQf[m_base][vt * 16], acc_o[vt], 64,
+                            wmma::mem_row_major);
+  }
+  __syncthreads();
+
+  for (int idx = threadIdx.x; idx < CO_BT * CO_BV; idx += 128) {
+    const int m = idx / CO_BV;
+    const int d = idx % CO_BV;
+    const int gm = i_tc * CO_BT + m;
+    if (gm >= T) continue;
+    o_head[(size_t)gm * HV + d] = __float2half(sQf[m][d] * scale);
+  }
+}
+
+}  // namespace sm70_fla
+}  // namespace vllm
+
+// chunk_o launcher.  scale is passed as the bit pattern of a float inside
+// an int64 (stable-libtorch TORCH_BOX mangles float scalar args).
+torch::stable::Tensor fla_chunk_o_sm70(
+    torch::stable::Tensor q,
+    torch::stable::Tensor k,
+    torch::stable::Tensor v,
+    torch::stable::Tensor h,
+    torch::stable::Tensor g,
+    torch::stable::Tensor o,
+    torch::stable::Tensor cu_seqlens,
+    torch::stable::Tensor chunk_indices,
+    int64_t scale_bits,
+    int64_t NT_total) {
+  const int T_total = q.size(0);
+  const int Hg = q.size(1);
+  const int K = q.size(2);
+  const int H = v.size(1);
+  const int V = v.size(2);
+  const int NT = (int)NT_total;
+  float scale;
+  {
+    uint32_t bits = (uint32_t)(scale_bits & 0xffffffffu);
+    memcpy(&scale, &bits, sizeof(scale));
+  }
+
+  const torch::stable::accelerator::DeviceGuard device_guard(q.get_device_index());
+  const cudaStream_t stream = get_current_cuda_stream();
+
+  dim3 grid(NT, H, V / vllm::sm70_fla::CO_BV);
+  vllm::sm70_fla::fla_chunk_o_kernel<<<grid, 128, 0, stream>>>(
+      reinterpret_cast<const half*>(
+          q.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(
+          k.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(
+          v.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(
+          h.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(
+          g.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<half*>(o.mutable_data_ptr<torch::headeronly::Half>()),
+      cu_seqlens.mutable_data_ptr<int>(),
+      chunk_indices.mutable_data_ptr<int>(),
+      H, Hg, K, V, scale);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("fla_chunk_o_sm70 launch failed: %s grid=(%d,%d,%d)\n",
+           cudaGetErrorString(err), (int)grid.x, (int)grid.y, (int)grid.z);
+    assert(false);
+  }
+  (void)T_total;
+  return o;
+}
+
 // delta_h kernel: recurrent state update with WMMA
 // v = sum_i(w_i @ h_i^T), v_new = u - v (gated), h_i += (k_i @ v_new)^T
 // Grid: (cdiv(V,32), N*H), Block: 128 (4 warps), Shared: ~41KB
@@ -1375,7 +1718,9 @@ void fla_delta_h_kernel(
     const half* __restrict__ u,      // [T_total, H, V] (original v from WY)
     const half* __restrict__ g,      // [T_total, H] (cumsum)
     half* __restrict__ v_new,        // [T_total, H, V]
-    half* __restrict__ h_out,        // [NT_total, H, V, K]
+    float* __restrict__ h_out,       // [NT_total, H, V, K] (fp32, matches Triton)
+    float* __restrict__ ht_out,      // [N, H, V, K] final state (per seq), may be null
+    const float* __restrict__ init_state,  // [N, H, V, K] pre-chunk states, may be null
     const int* __restrict__ cu_seqlens,
     const int* __restrict__ chunk_offsets,
     int H, int Hg, int K, int V) {
@@ -1395,36 +1740,53 @@ void fla_delta_h_kernel(
   const int HK = H * K;
   const int HV = H * V;
   const int HVK = H * V * K;
+  // Number of 64-wide K sub-blocks; K must be a multiple of DH_KS (the
+  // Python dispatch gates this kernel to K <= 256).
+  const int NK = K / DH_KS;
 
   const half* k_head = k + (bos * Hg + hg) * K;
   const half* w_head = w + (bos * H + i_h) * K;
   const half* u_head = u + (bos * H + i_h) * V;
   const half* g_head = g + bos * H + i_h;
   half* vn_head = v_new + (bos * H + i_h) * V;
-  half* h_head = h_out + ((boh * H + i_h) * V) * K;
+  float* h_head = h_out + ((boh * H + i_h) * V) * K;
 
   const int warp_id = threadIdx.x / 32;
 
-  __shared__ half sH1[DH_BV][DH_KS];
-  __shared__ half sH2[DH_BV][DH_KS];
-  __shared__ half sH3[DH_BV][DH_KS];
-  __shared__ half sH4[DH_BV][DH_KS];
+  // Dynamic shared layout: fp32 state [4 subs][DH_BV][DH_KS] then a
+  // half staging tile [DH_BV][DH_KS] for the WMMA loads. The state stays
+  // fp32 across chunks (matching the Triton reference); fp16 is used only
+  // for the WMMA dot operands.
+  extern __shared__ float sH_state[];
+  float* sHsub[4];
+  #pragma unroll
+  for (int i = 0; i < 4; i++) sHsub[i] = sH_state + i * (DH_BV * DH_KS);
+  half* sHh = reinterpret_cast<half*>(sH_state + 4 * DH_BV * DH_KS);
+
   __shared__ half sData[DH_BT][DH_SData];
   __shared__ float sV[DH_BT][DH_BV];
   __shared__ half sVh[DH_BT][DH_BV];
   __shared__ float sG[DH_BT];
 
-  half* sH_ptrs[4] = {
-    &sH1[0][0], &sH2[0][0], &sH3[0][0], &sH4[0][0]
-  };
-
-  // Zero state
-  for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
-    sH1[idx / DH_KS][idx % DH_KS] = __float2half(0.0f);
-    sH2[idx / DH_KS][idx % DH_KS] = __float2half(0.0f);
-    sH3[idx / DH_KS][idx % DH_KS] = __float2half(0.0f);
-    sH4[idx / DH_KS][idx % DH_KS] = __float2half(0.0f);
-  }
+  // Initial state: the sequence's pre-chunk state (decode-carried for
+  // continuations, zeros for fresh sequences).
+  if (init_state != nullptr) {
+    const float* init_head = init_state + (int64_t)i_nh * V * K +
+        i_v * DH_BV * K;
+    for (int sub = 0; sub < NK; sub++) {
+        for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
+          int r = idx / DH_KS, c = idx % DH_KS;
+          sHsub[sub][r * DH_KS + c] = init_head[r * K + sub * DH_KS + c];
+        }
+      }
+    } else {
+      for (int sub = 0; sub < NK; sub++) {
+        for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
+          int r = idx / DH_KS, c = idx % DH_KS;
+          sHsub[sub][r * DH_KS + c] = 0.0f;
+        }
+      }
+    }
   __syncthreads();
 
   // V computation: each warp handles 1 M-tile (16 rows of BT=64), 2 N-tiles (BV=32)
@@ -1434,11 +1796,12 @@ void fla_delta_h_kernel(
     int cs = i_t * DH_BT;
     int ce = min(cs + DH_BT, T);
 
-    // Store current state to h_out
-    for (int sub = 0; sub < 4; sub++) {
+    // Store current state to h_out (fp32, chunk-start state)
+    for (int sub = 0; sub < NK; sub++) {
       for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
         int r = idx / DH_KS, c = idx % DH_KS;
-        h_head[i_t * HVK + r * K + sub * DH_KS + c] = sH_ptrs[sub][r * DH_KS + c];
+        h_head[i_t * HVK + (i_v * DH_BV + r) * K + sub * DH_KS + c] =
+            sHsub[sub][r * DH_KS + c];
       }
     }
     __syncthreads();
@@ -1448,7 +1811,7 @@ void fla_delta_h_kernel(
     #pragma unroll
     for (int i = 0; i < 2; i++) wmma::fill_fragment(v_acc[i], 0.0f);
 
-    for (int sub = 0; sub < 4; sub++) {
+    for (int sub = 0; sub < NK; sub++) {
       // Load w[64, 64] into sData
       for (int idx = threadIdx.x; idx < DH_BT * DH_KS; idx += 128) {
         int t = idx / DH_KS, d = idx % DH_KS;
@@ -1456,10 +1819,15 @@ void fla_delta_h_kernel(
         sData[t][d] = (gt < T) ? w_head[gt * HK + sub * DH_KS + d]
                               : __float2half(0.0f);
       }
+      // Stage the state sub-block in fp16 for the WMMA operand
+      for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
+        int r = idx / DH_KS, c = idx % DH_KS;
+        sHh[r * DH_KS + c] = __float2half(sHsub[sub][r * DH_KS + c]);
+      }
       __syncthreads();
 
       // v += w @ h^T  (w[64,64] @ h^T[64,32] → v[64,32])
-      // A=w row_major, B=h^T col_major from sH[sub]
+      // A=w row_major, B=h^T col_major from sHh[sub]
       for (int kt = 0; kt < 4; kt++) {
         wmma::fragment<wmma::matrix_a, 16, 16, 16, half,
                        wmma::row_major> a_frag;
@@ -1470,7 +1838,7 @@ void fla_delta_h_kernel(
           wmma::fragment<wmma::matrix_b, 16, 16, 16, half,
                          wmma::col_major> b_frag;
           wmma::load_matrix_sync(b_frag,
-                                 &sH_ptrs[sub][nt * 16 * DH_KS + kt * 16],
+                                 &sHh[nt * 16 * DH_KS + kt * 16],
                                  DH_KS);
           wmma::mma_sync(v_acc[nt], a_frag, b_frag, v_acc[nt]);
         }
@@ -1502,7 +1870,8 @@ void fla_delta_h_kernel(
         vn_head[gt * HV + i_v * DH_BV + d] = __float2half(sV[t][d]);
     }
 
-    // Gate: v *= exp(g_last - g), h *= exp(g_last)
+    // Gate: v *= exp(g_last - g), h *= exp(g_last). g is a natural-log
+    // cumulative sum (chunk.py -> chunk_local_cumsum, USE_EXP2=False).
     int last_idx = min(ce, T) - 1;
     float g_last = __half2float(g_head[last_idx * H]);
     float g_last_exp = expf(g_last);
@@ -1520,11 +1889,10 @@ void fla_delta_h_kernel(
         sV[t][d] *= expf(g_last - sG[t]);
     }
 
-    for (int sub = 0; sub < 4; sub++) {
+    for (int sub = 0; sub < NK; sub++) {
       for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
         int r = idx / DH_KS, c = idx % DH_KS;
-        float v = __half2float(sH_ptrs[sub][r * DH_KS + c]) * g_last_exp;
-        sH_ptrs[sub][r * DH_KS + c] = __float2half(v);
+        sHsub[sub][r * DH_KS + c] *= g_last_exp;
       }
     }
     __syncthreads();
@@ -1544,7 +1912,7 @@ void fla_delta_h_kernel(
     int m_tile_h = warp_id / 2;  // 0 or 1
     int n_start = (warp_id % 2) * 2;  // 0 or 2
 
-    for (int sub = 0; sub < 4; sub++) {
+    for (int sub = 0; sub < NK; sub++) {
       // Load k[64, 64] into sData
       for (int idx = threadIdx.x; idx < DH_BT * DH_KS; idx += 128) {
         int t = idx / DH_KS, d = idx % DH_KS;
@@ -1568,11 +1936,12 @@ void fla_delta_h_kernel(
         #pragma unroll
         for (int nt = 0; nt < 2; nt++) {
           int n_tile = n_start + nt;
-          // B = k^T[16, 16] from sData, col_major
+          // B = k[16, 16] from sData, row_major, chunk rows aligned with
+          // A's chunk columns: k[kt*16 + p][n*16 + c].
           wmma::fragment<wmma::matrix_b, 16, 16, 16, half,
-                         wmma::col_major> b_frag;
+                         wmma::row_major> b_frag;
           wmma::load_matrix_sync(b_frag,
-                                 &sData[n_tile * 16][kt * 16],
+                                 &sData[kt * 16][n_tile * 16],
                                  DH_SData);
           wmma::mma_sync(h_acc[nt], a_frag, b_frag, h_acc[nt]);
         }
@@ -1592,10 +1961,22 @@ void fla_delta_h_kernel(
       // Add h_update to state
       for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
         int r = idx / DH_KS, c = idx % DH_KS;
-        float old = __half2float(sH_ptrs[sub][r * DH_KS + c]);
-        sH_ptrs[sub][r * DH_KS + c] = __float2half(old + sV_flat[r * DH_KS + c]);
+        sHsub[sub][r * DH_KS + c] += sV_flat[r * DH_KS + c];
       }
       __syncthreads();
+    }
+  }
+
+  // Epilogue: h_out stores the state at each chunk START; the post-chunk
+  // state of the final chunk is the sequence's final state.
+  if (ht_out != nullptr) {
+    float* ht_head = ht_out + i_nh * V * K + i_v * DH_BV * K;
+    for (int sub = 0; sub < NK; sub++) {
+      for (int idx = threadIdx.x; idx < DH_BV * DH_KS; idx += 128) {
+        int r = idx / DH_KS, c = idx % DH_KS;
+        ht_head[r * K + sub * DH_KS + c] =
+            sHsub[sub][r * DH_KS + c];
+      }
     }
   }
 }
@@ -1625,7 +2006,8 @@ fla_delta_h_sm70(
   const torch::stable::accelerator::DeviceGuard device_guard(
       k.get_device_index());
 
-  auto h = torch::stable::empty({B, NT, H, V, K}, k.scalar_type(),
+  auto h = torch::stable::empty({B, NT, H, V, K},
+                                torch::stable::ScalarType::Float,
                                 std::nullopt, k.device());
   auto v_new = torch::stable::empty({B, T_total, H, V}, u.scalar_type(),
                                     std::nullopt, u.device());
@@ -1638,16 +2020,246 @@ fla_delta_h_sm70(
   dim3 grid((V + 31) / 32, N * H);
   const cudaStream_t stream = get_current_cuda_stream();
 
-  vllm::sm70_fla::fla_delta_h_kernel<<<grid, 128, 0, stream>>>(
+  // Dynamic shared: fp32 state (4*32*64) + fp16 staging tile (32*64).
+  constexpr int kDynSmem = 4 * vllm::sm70_fla::DH_BV *
+                               vllm::sm70_fla::DH_KS * sizeof(float) +
+                           vllm::sm70_fla::DH_BV *
+                               vllm::sm70_fla::DH_KS * sizeof(half);
+  static bool smem_configured = false;
+  if (!smem_configured) {
+    cudaFuncSetAttribute(vllm::sm70_fla::fla_delta_h_kernel,
+                         cudaFuncAttributeMaxDynamicSharedMemorySize,
+                         kDynSmem);
+    smem_configured = true;
+  }
+
+  vllm::sm70_fla::fla_delta_h_kernel<<<grid, 128, kDynSmem, stream>>>(
       reinterpret_cast<const half*>(k.mutable_data_ptr<torch::headeronly::Half>()),
       reinterpret_cast<const half*>(w.mutable_data_ptr<torch::headeronly::Half>()),
       reinterpret_cast<const half*>(u.mutable_data_ptr<torch::headeronly::Half>()),
       reinterpret_cast<const half*>(g.mutable_data_ptr<torch::headeronly::Half>()),
       reinterpret_cast<half*>(v_new.mutable_data_ptr<torch::headeronly::Half>()),
-      reinterpret_cast<half*>(h.mutable_data_ptr<torch::headeronly::Half>()),
+      h.mutable_data_ptr<float>(),
+      output_final_state ? final_state.mutable_data_ptr<float>() : nullptr,
+      initial_state.size(0) > 0 ? initial_state.mutable_data_ptr<float>() : nullptr,
       cu_seqlens.mutable_data_ptr<int>(),
       chunk_offsets.mutable_data_ptr<int>(),
       H, Hg, K, V);
 
   return {h, v_new, final_state};
+}
+
+// Fused single-chunk gated-delta-rule verify kernel (T <= FV_MAX_T).
+// Collapses the 5-launch chain cumsum/kkt/solve_tril/wy/delta_h/chunk_o
+// into one launch for the MTP-verify path (small T, one chunk per seq).
+// Math (single chunk, S = (I + strict_tril(A_k))^-1, A_k[t,s] =
+// k[t].k[s]*exp(g_cs[t]-g_cs[s])*beta[t]):
+//   v_new[t]  = sum_s S[t,s] * (v[s] - k[s]^T h_prev)
+//   h_new     = h_prev * exp(g_last) + sum_t exp(g_last-g_cs[t]) (v_new[t] x k[t])
+//   o[t]      = scale * ( exp(g_cs[t]) (q[t]^T h_prev)
+//               + sum_{s<=t} exp(g_cs[t]-g_cs[s]) (q[t].k[s]) v_new[s] )
+// Grid: (cdiv(V,32), N*H), Block: 128.
+constexpr int FV_MAX_T = 8;
+
+__global__ __launch_bounds__(128, 1)
+void fla_verify_kernel(
+    const half* __restrict__ q,        // [T_total, Hg, K] (H/Hg heads share one q head)
+    const half* __restrict__ k,        // [T_total, Hg, K]
+    const half* __restrict__ v,        // [T_total, H, V]
+    const half* __restrict__ beta,     // [T_total, H]
+    const half* __restrict__ g_raw,    // [T_total, H] (pre-cumsum, natural log)
+    const float* __restrict__ h_prev,  // [N, H, V, K], may be null (zeros)
+    half* __restrict__ o,              // [T_total, H, V]
+    float* __restrict__ h_new,         // [N, H, V, K]
+    const int* __restrict__ cu_seqlens,
+    int64_t scale_bits, int H, int Hg, int K, int V) {
+  const float scale = __int_as_float((int32_t)scale_bits);
+  const int i_v = blockIdx.x;
+  const int i_nh = blockIdx.y;
+  const int i_h = i_nh % H;
+  const int i_n = i_nh / H;
+
+  int bos = cu_seqlens[i_n];
+  int T = cu_seqlens[i_n + 1] - bos;
+  if (T <= 0 || T > FV_MAX_T) return;
+
+  const int hg = i_h / (H / Hg);
+
+  const half* q_head = q + (bos * Hg + hg) * K;
+  const half* k_head = k + (bos * Hg + hg) * K;
+  const half* v_head = v + (bos * H + i_h) * V + i_v * 32;
+  const half* b_head = beta + bos * H + i_h;
+  const half* g_head = g_raw + bos * H + i_h;
+  const float* h_head = h_prev ? h_prev + i_nh * V * K + i_v * 32 * K : nullptr;
+  half* o_head = o + (bos * H + i_h) * V + i_v * 32;
+  float* hw_head = h_new + i_nh * V * K + i_v * 32 * K;
+
+  __shared__ half sK[FV_MAX_T][128];
+  __shared__ half sQ[FV_MAX_T][128];
+  __shared__ half sV[FV_MAX_T][32];
+  __shared__ float sG[FV_MAX_T];   // cumulative g
+  __shared__ float sBeta[FV_MAX_T];
+  __shared__ float sA[FV_MAX_T][FV_MAX_T];   // gated kkt
+  __shared__ float sQK[FV_MAX_T][FV_MAX_T];  // q[t].k[s]
+  __shared__ float sS[FV_MAX_T][FV_MAX_T];   // (I + tril(A))^-1
+  __shared__ float sKh[FV_MAX_T][32];  // k[t]^T h_prev
+  __shared__ float sQh[FV_MAX_T][32];  // q[t]^T h_prev
+  __shared__ float sVn[FV_MAX_T][32];  // v_new
+  __shared__ float sGexp[FV_MAX_T];   // exp(g_cs[t])
+  const int tid = threadIdx.x;
+
+  // Load q/k/v/beta/g into shared
+  for (int idx = tid; idx < FV_MAX_T * 128; idx += 128) {
+    int t = idx >> 7, d = idx & 127;
+    sK[t][d] = (t < T) ? __ldg(&k_head[t * (Hg * K) + d]) : __float2half(0.0f);
+    sQ[t][d] = (t < T) ? __ldg(&q_head[t * (Hg * K) + d]) : __float2half(0.0f);
+  }
+  for (int idx = tid; idx < FV_MAX_T * 32; idx += 128) {
+    int t = idx >> 5, d = idx & 31;
+    sV[t][d] = (t < T) ? __ldg(&v_head[t * (H * V) + d]) : __float2half(0.0f);
+  }
+  for (int idx = tid; idx < FV_MAX_T; idx += 128) {
+    if (idx < T) {
+      sBeta[idx] = __half2float(__ldg(&b_head[idx * H]));
+      sG[idx] = __half2float(__ldg(&g_head[idx * H]));
+    } else {
+      sBeta[idx] = 0.0f;
+      sG[idx] = 0.0f;
+    }
+  }
+  __syncthreads();
+  // cumulative sum of raw g (per head; T small -> serial on thread 0)
+  if (tid == 0) {
+    for (int t = 1; t < T; t++) sG[t] += sG[t - 1];
+    for (int t = 0; t < T; t++) sGexp[t] = expf(sG[t]);
+  }
+  __syncthreads();
+
+  // kkt + qk dots (one thread per (t,s) pair)
+  for (int idx = tid; idx < FV_MAX_T * FV_MAX_T; idx += 128) {
+    int t = idx / FV_MAX_T, s = idx % FV_MAX_T;
+    if (t < T && s <= t) {
+      float dot = 0.0f;
+      for (int d = 0; d < 128; d++) dot += __half2float(sK[t][d]) * __half2float(sK[s][d]);
+      sA[t][s] = dot * expf(sG[t] - sG[s]) * sBeta[t];
+      float qk = 0.0f;
+      for (int d = 0; d < 128; d++) qk += __half2float(sQ[t][d]) * __half2float(sK[s][d]);
+      sQK[t][s] = qk;
+    } else if (t < T && s < T) {
+      sA[t][s] = 0.0f;
+      sQK[t][s] = 0.0f;
+    }
+  }
+  __syncthreads();
+  // S = (I + strict_tril(A))^-1 via forward substitution (thread 0, T <= 8)
+  if (tid == 0) {
+    for (int t = 0; t < T; t++) {
+      for (int s = 0; s < T; s++) sS[t][s] = (s == t) ? 1.0f : 0.0f;
+    }
+    for (int t = 1; t < T; t++) {
+      for (int s = 0; s < t; s++) {
+        float acc = 0.0f;
+        for (int u = s; u < t; u++) acc += sA[t][u] * sS[u][s];
+        sS[t][s] = -acc;
+      }
+    }
+  }
+  __syncthreads();
+
+  // state dots qh/kh: thread (t, vd)
+  for (int idx = tid; idx < FV_MAX_T * 32; idx += 128) {
+    int t = idx >> 5, vd = idx & 31;
+    if (t < T) {
+      float ak = 0.0f, aq = 0.0f;
+      for (int d = 0; d < 128; d++) {
+        float kd = __half2float(sK[t][d]);
+        float qd = __half2float(sQ[t][d]);
+        float hp = h_head ? __ldg(&h_head[vd * K + d]) : 0.0f;
+        ak += kd * hp;
+        aq += qd * hp;
+      }
+      sKh[t][vd] = ak;
+      sQh[t][vd] = aq;
+    }
+  }
+  __syncthreads();
+
+  // v_new + h_new + o
+  // v_new[t] = u[t] - w[t]^T h_prev with the production wy semantics:
+  //   u[t] = sum_s S[t,s]*beta[s]*v[s]
+  //   w[t] = exp(g_cs[t]) * sum_s S[t,s]*beta[s]*k[s]
+  // so v_new[t,vd] = sum_s S[t,s]*beta[s]*(v[s,vd] - exp(g_cs[t])*kh[s,vd])
+  for (int idx = tid; idx < FV_MAX_T * 32; idx += 128) {
+    int t = idx >> 5, vd = idx & 31;
+    if (t < T) {
+      float et = sGexp[t];
+      float vn = 0.0f;
+      for (int s = 0; s < T; s++)
+        vn += sS[t][s] * sBeta[s] * (__half2float(sV[s][vd]) - et * sKh[s][vd]);
+      sVn[t][vd] = vn;
+    }
+  }
+  __syncthreads();
+
+  for (int idx = tid; idx < FV_MAX_T * 32 * 128; idx += 128) {
+    int vd = (idx / 128) & 31;
+    int t = (idx / (32 * 128));
+    int d = idx & 127;
+    if (t < T) {
+      float hp = h_head ? __ldg(&h_head[vd * K + d]) : 0.0f;
+      float hacc = hp * sGexp[T - 1];
+      for (int tt = 0; tt < T; tt++)
+        hacc += (sGexp[T - 1] / sGexp[tt]) * sVn[tt][vd] * __half2float(sK[tt][d]);
+      hw_head[vd * K + d] = hacc;
+    }
+  }
+  __syncthreads();
+
+  for (int idx = tid; idx < FV_MAX_T * 32; idx += 128) {
+    int t = idx >> 5, vd = idx & 31;
+    if (t < T) {
+      float oacc = sGexp[t] * sQh[t][vd];
+      for (int s = 0; s <= t; s++)
+        oacc += (sGexp[t] / sGexp[s]) * sQK[t][s] * sVn[s][vd];
+      o_head[t * (H * V) + vd] = __float2half(oacc * scale);
+    }
+  }
+
+}
+
+std::tuple<torch::stable::Tensor, torch::stable::Tensor>
+fla_verify_sm70(
+    torch::stable::Tensor q, torch::stable::Tensor k,
+    torch::stable::Tensor v, torch::stable::Tensor beta,
+    torch::stable::Tensor g, torch::stable::Tensor h_prev,
+    torch::stable::Tensor cu_seqlens, int64_t scale_bits,
+    int64_t N) {
+  int T = k.size(1);
+  int H = v.size(2), Hg = k.size(2), K = k.size(3), V = v.size(3);
+  const torch::stable::accelerator::DeviceGuard device_guard(
+      k.get_device_index());
+  auto o = torch::stable::empty({1, T, H, V}, v.scalar_type(), std::nullopt,
+                                v.device());
+  auto h_new = torch::stable::empty({N, H, V, K}, torch::stable::ScalarType::Float,
+                                    std::nullopt, k.device());
+  dim3 grid((V + 31) / 32, N * H);
+  const cudaStream_t stream = get_current_cuda_stream();
+  fla_verify_kernel<<<grid, 128, 0, stream>>>(
+      reinterpret_cast<const half*>(q.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(k.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(v.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(beta.mutable_data_ptr<torch::headeronly::Half>()),
+      reinterpret_cast<const half*>(g.mutable_data_ptr<torch::headeronly::Half>()),
+      h_prev.size(0) > 0 ? h_prev.mutable_data_ptr<float>() : nullptr,
+      reinterpret_cast<half*>(o.mutable_data_ptr<torch::headeronly::Half>()),
+      h_new.mutable_data_ptr<float>(),
+      cu_seqlens.mutable_data_ptr<int>(),
+      scale_bits, H, Hg, K, V);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("fla_verify_sm70 launch failed: %s grid=(%d,%d) block=128 smem=0\n",
+           cudaGetErrorString(err), (int)grid.x, (int)grid.y);
+    assert(false);
+  }
+  return {o, h_new};
 }

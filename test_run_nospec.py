@@ -2,6 +2,9 @@
 whether the ~75ms/step host stall belongs to the MTP pipeline or the base
 hybrid-model step."""
 import os, time
+# TP2 must run on the NVLink pair (GPU0<->1 has no NVLink; custom AR P2P
+# deadlocks over the PCIe host bridge). GPU1<->2 is NV6.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1,2")
 os.environ["VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS"] = "0"
 
 LOG = "/data/src/vllm/bench_result_nospec.log"

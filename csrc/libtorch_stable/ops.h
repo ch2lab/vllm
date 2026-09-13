@@ -224,6 +224,14 @@ std::tuple<torch::stable::Tensor, torch::stable::Tensor> fla_wy_sm70(
     torch::stable::Tensor A, torch::stable::Tensor cu_seqlens,
     torch::stable::Tensor chunk_indices, int64_t NT_total);
 
+// FLA SM70 WMMA kernel: chunk output o for GDN linear attention.
+torch::stable::Tensor fla_chunk_o_sm70(
+    torch::stable::Tensor q, torch::stable::Tensor k,
+    torch::stable::Tensor v, torch::stable::Tensor h,
+    torch::stable::Tensor g, torch::stable::Tensor o,
+    torch::stable::Tensor cu_seqlens, torch::stable::Tensor chunk_indices,
+    int64_t scale_bits, int64_t NT_total);
+
 std::tuple<torch::stable::Tensor, torch::stable::Tensor,
            torch::stable::Tensor>
 fla_delta_h_sm70(
@@ -234,6 +242,14 @@ fla_delta_h_sm70(
     torch::stable::Tensor initial_state,
     bool output_final_state,
     int64_t NT_total);
+
+std::tuple<torch::stable::Tensor, torch::stable::Tensor>
+fla_verify_sm70(
+    torch::stable::Tensor q, torch::stable::Tensor k,
+    torch::stable::Tensor v, torch::stable::Tensor beta,
+    torch::stable::Tensor g, torch::stable::Tensor h_prev,
+    torch::stable::Tensor cu_seqlens, int64_t scale_bits,
+    int64_t N);
 
 // DSV3 fused A GEMM: conditionally compiled so declaration and impl
 // registration are in the source file (dsv3_fused_a_gemm.cu)

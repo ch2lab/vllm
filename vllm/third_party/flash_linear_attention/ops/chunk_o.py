@@ -10,16 +10,35 @@
 # ruff: noqa: E501
 
 
+import os
+
 import torch
 
 from vllm.triton_utils import tl, triton
 
+from ._sm70_prof import profiled
 from .index import prepare_chunk_indices
 from .op import exp
 from .utils import FLA_CHUNK_SIZE, check_shared_mem, is_nvidia_hopper
 
 BKV_LIST = [64, 128] if check_shared_mem() else [32, 64]
 NUM_WARPS = [2, 4] if is_nvidia_hopper else [2, 4, 8]
+
+_SM70_CHUNK_O_OK: int | None = None
+
+
+def _sm70_chunk_o_enabled() -> bool:
+    global _SM70_CHUNK_O_OK
+    if _SM70_CHUNK_O_OK is None:
+        from vllm.platforms import current_platform
+
+        _SM70_CHUNK_O_OK = int(
+            os.environ.get("VLLM_SM70_FLA_CHUNK_O_WMMA", "1") != "0"
+            and current_platform.is_cuda()
+            and current_platform.has_device_capability(70)
+            and not current_platform.has_device_capability(80)
+        )
+    return _SM70_CHUNK_O_OK == 1
 
 
 @triton.heuristics(
@@ -138,6 +157,7 @@ def chunk_fwd_kernel_o(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+@profiled("fla.chunk_o")
 def chunk_fwd_o(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -166,6 +186,42 @@ def chunk_fwd_o(
         o = core_attn_out[: v.numel()].view(*v.shape)
     else:
         o = torch.empty_like(v)
+
+    if (
+        _sm70_chunk_o_enabled()
+        and cu_seqlens is not None
+        and chunk_indices is not None
+        and chunk_size == 64
+        and g is not None
+        and q.dtype == torch.float16
+        and K <= 128
+        and V % 64 == 0
+        and q.stride(-1) == 1
+        and k.stride(-1) == 1
+        and not torch.cuda.is_current_stream_capturing()
+    ):
+        import struct as _s
+
+        q4 = q.reshape(-1, Hg, K)
+        k4 = k.reshape(-1, Hg, K)
+        v4 = v.reshape(-1, H, V)
+        o4 = o.reshape(-1, H, V)
+        if v4.stride(0) != H * V or v4.stride(2) != 1:
+            v4 = v4.contiguous()
+        g4 = g.reshape(-1, H)
+        if g4.dtype != torch.float16:
+            g4 = g4.to(torch.float16)
+        if g4.stride(0) != H:
+            g4 = g4.contiguous()
+        if h.dtype != torch.float16:
+            h = h.to(torch.float16)
+        scale_bits = _s.unpack("q", _s.pack("<f", float(scale)) + b"\0" * 4)[0]
+        torch.ops._C.fla_chunk_o_sm70(
+            q4, k4, v4, h, g4, o4,
+            cu_seqlens.to(torch.int32), chunk_indices.to(torch.int32),
+            scale_bits, len(chunk_indices),
+        )
+        return o
 
     def grid(meta):
         return (triton.cdiv(V, meta["BV"]), NT, B * H)

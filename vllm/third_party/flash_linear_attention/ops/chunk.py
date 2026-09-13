@@ -19,12 +19,85 @@ from .solve_tril import solve_tril
 from .utils import FLA_CHUNK_SIZE, SUPPRESS_LEVEL, input_guard
 from .wy_fast import recompute_w_u_fwd
 
+# Max per-sequence query length of the next chunk_gated_delta_rule_fwd call,
+# published by the GDN layer from the attention metadata. Worker execution is
+# sequential, so a module global is safe and avoids threading an extra
+# argument through the autograd Function.
+_SM70_MAX_QUERY_LEN: int | None = None
+_FLA_DBG_COUNT = 0
+
+
+def sm70_set_max_query_len(v: int | None) -> None:
+    global _SM70_MAX_QUERY_LEN
+    _SM70_MAX_QUERY_LEN = v
+
+
+def _fused_sm70_verify(q, k, v, beta, g, initial_state, cu_seqlens, scale):
+    """Fused single-chunk gated-delta-rule (MTP-verify path, T<=8).
+
+    Replaces cumsum/kkt/solve_tril/wy/delta_h/chunk_o with one CUDA WMMA
+    kernel launch per layer. Returns (o, final_state).
+    """
+    B, T, Hg, K = q.shape
+    H = v.shape[2]
+    V = v.shape[3]
+    # The WMMA kernel reads fp16 only; the gating projections can hand over
+    # fp32/bf16 tensors (e.g. during cudagraph dummy runs).
+    if q.dtype != torch.float16:
+        q = q.half()
+    if k.dtype != torch.float16:
+        k = k.half()
+    if v.dtype != torch.float16:
+        v = v.half()
+    beta2 = beta.reshape(-1, H)
+    g2 = g.reshape(-1, H)
+    if beta2.dtype != torch.float16:
+        beta2 = beta2.half()
+    if g2.dtype != torch.float16:
+        g2 = g2.half()
+    h0 = initial_state if initial_state is not None else torch.empty(
+        0, dtype=torch.float32, device=q.device)
+    # The kernel reads the state as fp32; the ssm cache is bf16.
+    if h0.numel() > 0 and h0.dtype != torch.float32:
+        h0 = h0.float()
+    cu32 = cu_seqlens.to(torch.int32)
+    N = cu_seqlens.numel() - 1
+    # The stable-libtorch binding mangles float scalar args; pass the fp32
+    # bit pattern as an int64 instead.
+    import struct as _s
+    scale_bits = _s.unpack('q', _s.pack('<f', scale) + b'\0' * 4)[0]
+    o, h_new = torch.ops._C.fla_verify_sm70(
+        q.contiguous(), k.contiguous(), v.contiguous(),
+        beta2, g2, h0, cu32, scale_bits, N)
+    return o.view(B, T, H, V), h_new
+
 
 def chunk_gated_delta_rule_fwd(
     q, k, v, g, beta, scale, initial_state, output_final_state,
     cu_seqlens=None, chunk_indices=None, chunk_offsets=None,
     core_attn_out=None,
 ):
+    # SM70 fused single-chunk path for the small-T (MTP verify) case.
+    from vllm.platforms import current_platform
+    import os as _os
+
+    # The per-sequence query length comes from the attention metadata when
+    # the caller set it (decode/verify batches pad many small sequences, so
+    # total-T checks misclassify them); fall back to the conservative
+    # total<=8 check otherwise.
+    mq = _SM70_MAX_QUERY_LEN
+    small_t = (1 <= mq <= 8) if mq is not None else (1 <= k.shape[1] <= 8)
+    if (_os.environ.get("VLLM_SM70_FLA_FUSED_VERIFY", "1") != "0"
+            and current_platform.is_cuda()
+            and current_platform.has_device_capability(70)
+            and not current_platform.has_device_capability(80)
+            and cu_seqlens is not None
+            and q.shape[-1] == 128 and v.shape[-1] == 128
+            and v.shape[2] % q.shape[2] == 0
+            and small_t):
+        o, fs = _fused_sm70_verify(q, k, v, beta, g, initial_state,
+                                   cu_seqlens, scale)
+        return None, o, None, fs, None, None, None
     g = chunk_local_cumsum(
         g, chunk_size=FLA_CHUNK_SIZE, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices
     )
