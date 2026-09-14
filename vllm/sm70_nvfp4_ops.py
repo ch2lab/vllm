@@ -1,22 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-"""SM70 (Volta / V100) NVFP4 GEMM bindings.
+"""SM70 (Volta / V100) NVFP4 op bindings.
 
-Binds the SM70 Marlin NVFP4 GEMM op (registered as
-``torch.ops._C.sm70_nvfp4_marlin_gemm`` in the vLLM C extension) and gates it
-behind the ``VLLM_SM70_NVFP4`` env switch and an exact-SM70 hardware check.
+Binds the SM70 NVFP4 ops (registered in the vLLM C extension) and gates them
+behind the ``VLLM_SM70_NVFP4`` env switch and an exact-SM70 hardware check:
 
-The NVFP4 GEMM reads the checkpoint's ``nvfp4-pack-quantized`` layout directly
-and applies ``global_scale`` internally (epilogue alpha), so no repack /
-``prepare`` step is needed.
+* ``sm70_nvfp4_dequant`` -- the active weight path: a single fused pass that
+  reads the checkpoint's natural row-major packed NVFP4 codes + the per-16
+  group FP8-E4M3 scales and emits a dense FP16 weight (the per-tensor global
+  scale is baked in). The linear layer then runs a plain FP16 GEMM.
+* ``sm70_nvfp4_marlin_gemm`` -- the Marlin NVFP4 GEMM (dequant fused
+  in-kernel), present for the macro-N layout-matched fast path.
 """
 
 import torch
 
 from vllm import envs
 
-__all__ = ["is_exact_sm70", "is_enabled", "gemm"]
+__all__ = ["is_exact_sm70", "is_enabled", "gemm", "dequant"]
 
 
 def is_exact_sm70() -> bool:
@@ -27,21 +29,21 @@ def is_exact_sm70() -> bool:
 
 
 def _op_registered() -> bool:
-    """True iff the SM70 NVFP4 GEMM op is present in the loaded C extension.
+    """True iff the SM70 NVFP4 ops are present in the loaded C extension.
 
-    The op is registered by the stable extension (loaded as
-    ``vllm._C_stable_libtorch``) but lives in the ``torch.ops._C`` namespace.
+    The ops are registered by the stable extension (loaded as
+    ``vllm._C_stable_libtorch``) but live in the ``torch.ops._C`` namespace.
     The lookup is guarded so an unloaded extension is treated as unavailable
     rather than raising.
     """
     try:
-        return hasattr(torch.ops._C, "sm70_nvfp4_marlin_gemm")
+        return hasattr(torch.ops._C, "sm70_nvfp4_dequant")
     except Exception:
         return False
 
 
 def is_enabled() -> bool:
-    """Return True iff the SM70 NVFP4 GEMM should be used."""
+    """Return True iff the SM70 NVFP4 path (dequant -> FP16 GEMM) is usable."""
     if not envs.VLLM_SM70_NVFP4:
         return False
     if not is_exact_sm70():
@@ -86,4 +88,28 @@ def gemm(a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size):
     global_scale = (1.0 / global_scale) * 4194304.0  # (1/GS) * 2^22
     return torch.ops._C.sm70_nvfp4_marlin_gemm(
         a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size
+    )
+
+
+def dequant(weight, weight_scale, global_scale):
+    """Dequant the checkpoint's natural NVFP4 weight to a dense FP16 weight.
+
+    Single fused pass (SM70 C++ kernel): reads the row-major packed NVFP4 codes
+    + the per-16-group FP8-E4M3 scales, and writes the dense FP16 weight with
+    the per-tensor global_scale (the layer's weight_global_scale multiplier)
+    baked in. Replaces the multi-pass torch dequant that dominated the on-the-
+    fly dequant cost for the large (n%64==0) layers.
+
+    Args:
+        weight: packed NVFP4 weight (uint8), shape (n, k//2).
+        weight_scale: per-16-group FP8-E4M3 scale, shape (n, k//16).
+        global_scale: per-tensor FP32 multiplier (layer.weight_global_scale).
+
+    Returns:
+        Dense FP16 weight of shape (n, k).
+    """
+    if torch.is_tensor(global_scale):
+        global_scale = float(global_scale.item())
+    return torch.ops._C.sm70_nvfp4_dequant(
+        weight.contiguous(), weight_scale.contiguous(), float(global_scale)
     )
