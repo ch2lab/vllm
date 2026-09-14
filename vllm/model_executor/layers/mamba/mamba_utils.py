@@ -14,6 +14,7 @@ from vllm.config.mamba import MambaBackendEnum
 from vllm.config.model import ModelDType
 from vllm.distributed import divide
 from vllm.logger import init_logger
+from vllm.sm70_nvfp4_ops import is_exact_sm70
 from vllm.utils.torch_utils import (
     STR_DTYPE_TO_TORCH_DTYPE,
     get_kv_cache_torch_dtype,
@@ -125,9 +126,22 @@ class MambaStateDtypeCalculator:
         mamba_cache_dtype: MambaDType,
         mamba_ssm_cache_dtype: MambaDType = "auto",
     ) -> tuple[torch.dtype, torch.dtype]:
-        return cls._mamba_state_dtype(
+        dtypes = cls._mamba_state_dtype(
             model_dtype, mamba_cache_dtype, mamba_ssm_cache_dtype
         )
+        # On SM70 (V100) the FLA GDN decode kernel accumulates the recurrent
+        # state in fp32 but stores it back in the cache dtype each decode step.
+        # With the default fp16 recurrent state, per-step fp16 rounding of the
+        # state drifts over long decodes. Force fp32 recurrent state on SM70
+        # when left at "auto" (matches the reference SM70 behavior); explicit
+        # dtypes and other archs are left unchanged.
+        if (
+            mamba_ssm_cache_dtype == "auto"
+            and dtypes[1] is not torch.float32
+            and is_exact_sm70()
+        ):
+            dtypes = (dtypes[0], torch.float32)
+        return dtypes
 
     @classmethod
     def kda_state_dtype(
