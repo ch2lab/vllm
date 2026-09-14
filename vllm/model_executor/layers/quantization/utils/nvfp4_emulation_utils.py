@@ -311,7 +311,18 @@ def _dequantize_nvfp4_kernel(
         mask=block_mask,
         other=0,
     )
-    scale_f32 = tl.cast(raw_scales, tl.float8e4nv, bitcast=True).to(tl.float32)
+    # SM70-safe E4M3 -> fp32 (the fp8e4nv bitcast does not compile on cc7.0):
+    # decode the raw scale byte with integer + float ops (matches torch for all
+    # finite e4m3 values; 0x7f/0xff are torch NaN, never present in real scales).
+    _si = raw_scales.to(tl.int32)
+    _sgn = (_si >> 7) & 1
+    _exp = (_si >> 3) & 0xF
+    _mant = _si & 0x7
+    _mf = _mant.to(tl.float32)
+    _norm = (1.0 + _mf / 8.0) * tl.exp2(_exp.to(tl.float32) - 7.0)
+    _sub = _mf * (1.0 / 512.0)
+    scale_f32 = tl.where(_exp == 0, _sub, _norm)
+    scale_f32 = tl.where(_sgn == 1, -scale_f32, scale_f32)
     scale_values = (scale_f32 * global_scale)[:, None]
 
     # Load [TILE_BLOCKS, BLOCK_PACKED] packed bytes
