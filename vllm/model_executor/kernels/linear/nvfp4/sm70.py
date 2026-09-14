@@ -61,6 +61,17 @@ def dequant_nvfp4_to_fp16(
     scale_exp = scale.repeat_interleave(16, dim=1)       # (n, k)
     return (deq * scale_exp).to(torch.float16)
 
+def _sm70_dequant_scaled(layer, k, n):
+    """Dequant the NVFP4 weight to FP16 with the per-tensor global scale
+    baked in. The layer's weight_global_scale is a MULTIPLIER (the reciprocal
+    of the checkpoint's dequant divisor, e.g. 1/6171.6 = 1.6e-4), so the true
+    weight = (fp4 x group_scale) * weight_global_scale. Multiplying (not
+    dividing) yields the true weight magnitude (~0.4) instead of the
+    pre-normalization magnitude (~2688), keeping the FP16 GEMM in range."""
+    W = dequant_nvfp4_to_fp16(layer.weight, layer.weight_scale, k, n)
+    return (W.to(torch.float32)
+            * layer.weight_global_scale.to(torch.float32)).to(torch.float16)
+
 
 class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
     """Weight-only NVFP4 GEMM on SM70 (V100/Volta): dequant -> FP16.
@@ -111,7 +122,7 @@ class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
             # multiple output dim (e.g. n=96) cannot use it. Dequant the
             # natural checkpoint layout to a dense FP16 weight once and cache
             # it; each forward then runs a plain FP16 GEMM.
-            W_fp16 = dequant_nvfp4_to_fp16(layer.weight, layer.weight_scale, k, n)
+            W_fp16 = _sm70_dequant_scaled(layer, k, n)
             layer._sm70_nvfp4_fp16_weight = W_fp16
             layer._sm70_nvfp4_fp16_k = k
             layer._sm70_nvfp4_fp16_n = n
@@ -143,18 +154,19 @@ class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
 
         # SM70 NVFP4: dequant to FP16 + standard FP16 GEMM.
         #
-        # Correct dequant: w_true = (fp4_codes × group_scale) / weight_global_scale
-        # We dequant the NVFP4 weight to a dense FP16 tensor, run F.linear,
-        # then divide by weight_global_scale. <0.1% error vs true weight.
+        # Correct dequant: w_true = (fp4_codes x group_scale) x weight_global_scale
+        # (the layer stores weight_global_scale as a multiplier, the reciprocal
+        # of the checkpoint's dequant divisor). It is baked into the dequantized
+        # FP16 weight (_sm70_dequant_scaled) so the FP16 GEMM runs on the true
+        # weight magnitude (~0.4), not the pre-normalization magnitude (~2688)
+        # which would overflow FP16 on activation outliers.
         #
         # Small layers (n%64!=0) have their dequant cached at load time.
         # Large layers (n%64==0) dequant on-the-fly (not cached, to avoid
         # OOM — 27B model in FP16 = 54 GB > 32 GB V100).
         W_fp16 = getattr(layer, "_sm70_nvfp4_fp16_weight", None)
         if W_fp16 is None:
-            W_fp16 = dequant_nvfp4_to_fp16(
-                layer.weight, layer.weight_scale, k, n
-            )
+            W_fp16 = _sm70_dequant_scaled(layer, k, n)
             # Only cache small weights (already pre-cached by
             # process_weights_after_loading for n%64!=0). For large layers,
             # W_fp16 is a temporary that will be freed after this call.
@@ -162,8 +174,6 @@ class Sm70MarlinNvFp4LinearKernel(NvFp4LinearKernel):
                 layer._sm70_nvfp4_fp16_weight = W_fp16
 
         out = F.linear(a, W_fp16).to(torch.float32)
-        # NVFP4: weight_global_scale is a divisor (denormalization factor)
-        out = out.div_(layer.weight_global_scale.to(torch.float32))
         if bias is not None:
             out = out + bias.to(torch.float32)
 
