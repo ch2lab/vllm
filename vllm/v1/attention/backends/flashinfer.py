@@ -1081,10 +1081,17 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             and self.sm70_nvfp4_shadow
             and self.head_dim == 256
             and self.num_kv_heads == 2
-            and self.num_qo_heads % self.num_kv_heads == 6
+            and self.num_qo_heads // self.num_kv_heads == 6
             and not self.use_dcp
             and bool(_get_sm70_splitd_op())
         )
+        if envs.VLLM_SM70_SPLITD_PREFILL and not self.splitd_enabled:
+            logger.info(
+                "SM70 splitd prefill gate on but disabled: shadow=%s "
+                "head_dim=%s kv_heads=%s qo_heads=%s dcp=%s",
+                self.sm70_nvfp4_shadow, self.head_dim, self.num_kv_heads,
+                self.num_qo_heads, self.use_dcp,
+            )
 
         if (
             self.is_kvcache_nvfp4
