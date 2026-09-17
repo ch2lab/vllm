@@ -38,6 +38,17 @@ if [ -f "$BUILD_DIR/${TARGET}.abi3.so" ]; then
     SO_FILE="$BUILD_DIR/${TARGET}.abi3.so"
 elif ls "$BUILD_DIR/${TARGET}".cpython-*.so >/dev/null 2>&1; then
     SO_FILE=$(ls "$BUILD_DIR/${TARGET}".cpython-*.so | head -1)
+elif ls "$BUILD_DIR"/*/${TARGET}.abi3.so >/dev/null 2>&1; then
+    # Nested build dirs (e.g. vllm-flash-attn/_vllm_fa2_C.abi3.so).
+    # Install next to the Python package the target's DESTINATION names.
+    SO_FILE=$(ls "$BUILD_DIR"/*/${TARGET}.abi3.so | head -1)
+    case "$TARGET" in
+        _vllm_fa2_C) DEST="vllm/vllm_flash_attn" ;;
+        *) DEST="vllm" ;;
+    esac
+    cp "$SO_FILE" "$DEST/$(basename "$SO_FILE")"
+    echo "=== Installed: $DEST/$(basename "$SO_FILE") ==="
+    SO_FILE=""
 fi
 if [ -n "$SO_FILE" ]; then
     cp "$SO_FILE" "vllm/$(basename "$SO_FILE")"

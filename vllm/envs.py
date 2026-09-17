@@ -194,6 +194,7 @@ if TYPE_CHECKING:
     VLLM_SM70_NVFP4: bool = False
     VLLM_SM70_NVFP4_KV: bool = False
     VLLM_SM70_FLASHINFER_ATTN: bool = False
+    VLLM_SM70_SPLITD_PREFILL: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
@@ -1555,6 +1556,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # turned on.
     "VLLM_SM70_FLASHINFER_ATTN": lambda: bool(
         int(os.getenv("VLLM_SM70_FLASHINFER_ATTN", "0"))
+    ),
+    # SM70 (Volta V100) splitd D256 paged prefill kernel (1Cat port). When
+    # enabled, full-attention prefill steps that pass the admission contract
+    # (vllm.v1.attention.ops.sm70_splitd_policy) run the exact-tile WMMA
+    # kernel on an fp16 NHD KV stage instead of the FA2 paged path. Off by
+    # default so the prefill path is byte-identical to the FA2 behavior.
+    "VLLM_SM70_SPLITD_PREFILL": lambda: bool(
+        int(os.getenv("VLLM_SM70_SPLITD_PREFILL", "0"))
     ),
     # Whether to turn on the outlines cache for V1
     # This cache is unbounded and on disk, so it's not safe to use in
