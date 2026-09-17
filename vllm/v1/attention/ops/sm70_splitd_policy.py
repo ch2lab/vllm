@@ -4,11 +4,14 @@
 """Admission predicate for the SM70 splitd D256 paged prefill kernel.
 
 The splitd kernel (ported from 1Cat's flash-attention-v100 fork, op
-``torch.ops._vllm_fa2_C.sm70_d256_splitd_n32_paged_fwd``) is an exact-tile
-causal prefill kernel: q_len must be a multiple of its 64-row tile and the
-live kv_len a multiple of its 32-column tile, with head_dim 256 and FP16
-inputs. Steps that do not meet the shape contract run on the FA2 paged
-path (byte-identical to the pre-port behavior).
+``torch.ops._vllm_fa2_C.sm70_d256_splitd_n32_paged_fwd``) is a causal
+prefill kernel for head_dim 256, FP16 inputs. It tiles the query in
+64-row blocks and the KV in 32-column blocks. Non-aligned lengths are
+handled by padding the query buffer to a multiple of 64 and the KV
+workspace to a multiple of 32 (the causal offset is passed as the true
+``query_len`` so the mask stays correct); the integration slices the
+padded rows off. Steps that do not meet the shape contract fall back to
+the FA2 paged path (byte-identical to the pre-port behavior).
 """
 
 import torch
@@ -41,8 +44,6 @@ def sm70_splitd_admit(
         and causal
         and q_dtype is torch.float16
         and 64 <= q_len <= 8192
-        and q_len % 64 == 0
         and 0 < kv_len <= 262144
-        and kv_len % 32 == 0
         and q_len <= kv_len
     )

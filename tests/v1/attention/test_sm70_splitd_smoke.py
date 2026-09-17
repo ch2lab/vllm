@@ -48,30 +48,45 @@ def _ref_causal_gqa(q64, k64, v64, scale):
 
 
 def _run(paged_op, dense_op, paged, T, L, seed, device, shuffle=False):
-    """Run one (q_len, kv_len) case and return (out, err) vs the FP64 ref."""
+    """Run one (q_len, kv_len) case and return (out, err) vs the FP64 ref.
+
+    T and L are the *logical* (true) lengths. The paged op needs the query
+    buffer padded to a multiple of the 64-row tile and the KV workspace to a
+    multiple of the 32-column tile, and takes the true (T, L) for the causal
+    offset. The padded rows are excluded by the kernel's mask and sliced off.
+    """
     Hq, Hkv, D, N = 12, 2, 256, 16
     scale = 1.0 / 16.0
     g = torch.Generator(device="cpu").manual_seed(seed)
     q = torch.randn(1, T, Hq, D, generator=g, dtype=torch.float16).to(device)
     k = torch.randn(1, L, Hkv, D, generator=g, dtype=torch.float16).to(device)
     v = torch.randn(1, L, Hkv, D, generator=g, dtype=torch.float16).to(device)
-    out = torch.empty_like(q)
 
     if paged:
-        nb = L // N
-        k_p = k.reshape(nb, N, Hkv, D)
-        v_p = v.reshape(nb, N, Hkv, D)
+        T_pad = ((T + 63) // 64) * 64
+        L_pad = ((L + 31) // 32) * 32
+        q_buf = torch.zeros(
+            1, T_pad, Hq, D, dtype=torch.float16, device=device)
+        q_buf[:, :T].copy_(q)
+        nb = L_pad // N
+        k_p = torch.zeros(nb, N, Hkv, D, dtype=torch.float16, device=device)
+        v_p = torch.zeros_like(k_p)
+        k_p.reshape(L_pad, Hkv, D)[:L].copy_(k[0])
+        v_p.reshape(L_pad, Hkv, D)[:L].copy_(v[0])
         if shuffle:
             order = torch.randperm(nb, generator=torch.Generator().manual_seed(seed))
             k_p = k_p[order]
             v_p = v_p[order]
-        bt = (
-            torch.arange(nb, dtype=torch.int32)
-            if not shuffle
-            else order.to(torch.int32)
-        ).to(device).unsqueeze(0)
-        paged_op(q, k_p, v_p, bt, out, L, scale, True)
+            bt = order.to(torch.int32)
+        else:
+            bt = torch.arange(nb, dtype=torch.int32)
+        bt = bt.to(device).unsqueeze(0)
+        out_buf = torch.empty(
+            1, T_pad, Hq, D, dtype=torch.float16, device=device)
+        paged_op(q_buf, k_p, v_p, bt, out_buf, L, T, scale, True)
+        out = out_buf[:, :T]
     else:
+        out = torch.empty_like(q)
         dense_op(q, k, v, out, scale, True)
 
     ref = _ref_causal_gqa(q.double(), k.double(), v.double(), scale)
@@ -91,12 +106,19 @@ def _run(paged_op, dense_op, paged, T, L, seed, device, shuffle=False):
         (True, 4096, 16384, False),      # production chunk + long KV
         (True, 1024, 65536, False),
         (True, 4096, 16384, True),        # block-table permutation
+        # Spec-decode chunks: q = 4096 - num_spec_tokens = 4091 (unaligned),
+        # cumulative kv grows by 4091 each chunk. These are the real
+        # production shapes the kernel must handle.
+        (True, 4091, 4091, False),
+        (True, 4091, 8182, False),
+        (True, 2334, 26880, False),      # final partial chunk
     ],
     ids=[
         "dense-q64-kv64", "dense-q64-kv128", "dense-q128-kv1024",
         "dense-q1024-kv65536",
         "paged-q64-kv64", "paged-q4096-kv16384", "paged-q1024-kv65536",
         "paged-shuffled",
+        "paged-q4091-kv4091", "paged-q4091-kv8182", "paged-q2334-kv26880",
     ],
 )
 def test_splitd_matches_fp64_reference(paged, T, L, shuffle):

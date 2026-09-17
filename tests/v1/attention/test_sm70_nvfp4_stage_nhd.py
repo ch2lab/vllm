@@ -12,13 +12,12 @@ from vllm.v1.attention.ops.sm70_nvfp4_dequant import (
     sm70_nvfp4_paged_stage_nhd,
 )
 
-N = 16  # KV block size (production config)
 H_KV = 2
 D = 256
 F = D // 2 + D // 16  # 144 raw bytes per (side, head, token)
 
 
-def _raw_cache(num_blocks: int, device, seed: int) -> torch.Tensor:
+def _raw_cache(num_blocks: int, N: int, device, seed: int) -> torch.Tensor:
     g = torch.Generator(device=device).manual_seed(seed)
     return torch.randint(
         0, 256, (num_blocks, 2 * H_KV, N, F),
@@ -26,7 +25,7 @@ def _raw_cache(num_blocks: int, device, seed: int) -> torch.Tensor:
     )
 
 
-def _check(kv_cache, kv_len, k_scale, v_scale, device):
+def _check(N: int, kv_cache, kv_len, k_scale, v_scale, device):
     M = (kv_len + N - 1) // N
     block_table = torch.arange(
         M, dtype=torch.int32, device=device
@@ -64,20 +63,32 @@ def _check(kv_cache, kv_len, k_scale, v_scale, device):
         )
 
 
+# (page_size, kv_len, k_scale, v_scale). Page size 64 is the production
+# NVFP4 HND KV cache layout; 16 covers the smaller-page path. The 28637
+# case (7x4091 spec-decode chunks) is the kv where ceil32(kv) is not a
+# multiple of 64 — the production shape that broke the old sizing.
+CASES = [
+    (16, 32, 1.0, 1.0),          # minimum kernel-eligible KV
+    (16, 64, 0.37, 12.5),        # non-unit e4m3 layer scales
+    (16, 4848, 1.0, 1.0),         # kv%32==0
+    (16, 100, 1.0, 1.0),          # partial last block
+    (16, 16384, 0.61, 2.0),
+    (64, 64, 1.0, 1.0),           # one full page
+    (64, 100, 1.0, 1.0),          # partial page
+    (64, 28637, 1.0, 1.0),        # production 54K chunk-7 kv
+    (64, 53778, 0.61, 2.0),       # production 54K total kv
+]
+
+
 @pytest.mark.parametrize(
-    "kv_len,k_scale,v_scale",
-    [
-        (32, 1.0, 1.0),          # minimum kernel-eligible KV
-        (64, 0.37, 12.5),        # non-unit e4m3 layer scales
-        (4848, 1.0, 1.0),         # 303 blocks, kv%32==0
-        (100, 1.0, 1.0),          # partial last block (kv%16 != 0)
-        (16384, 0.61, 2.0),       # 1024 blocks
-    ],
+    "N,kv_len,k_scale,v_scale",
+    CASES,
+    ids=[f"n{N}-kv{kv}" for N, kv, _, _ in CASES],
 )
-def test_stage_bit_exact_vs_paged_shadow(kv_len, k_scale, v_scale):
+def test_stage_bit_exact_vs_paged_shadow(N, kv_len, k_scale, v_scale):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
     device = torch.device("cuda:0")
     M = (kv_len + N - 1) // N
-    kv_cache = _raw_cache(M, device, seed=kv_len)
-    _check(kv_cache, kv_len, k_scale, v_scale, device)
+    kv_cache = _raw_cache(M, N, device, seed=kv_len)
+    _check(N, kv_cache, kv_len, k_scale, v_scale, device)

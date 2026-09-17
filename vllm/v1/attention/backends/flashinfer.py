@@ -705,6 +705,10 @@ class FIPrefill:
     """SM70 splitd: fp16 NHD K stage [M, N, H_kv, D] (per layer, reused)."""
     splitd_v_ws: torch.Tensor | None = None
     """SM70 splitd: fp16 NHD V stage [M, N, H_kv, D] (per layer, reused)."""
+    splitd_q_ws: torch.Tensor | None = None
+    """SM70 splitd: padded fp16 query buffer [1, ceil64(q_len), H_q, D]."""
+    splitd_out_ws: torch.Tensor | None = None
+    """SM70 splitd: padded fp16 op output [1, ceil64(q_len), H_q, D]."""
 
 
 @dataclass
@@ -2058,6 +2062,21 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                     qo_indptr_prefill_cpu[1:]
                                     - qo_indptr_prefill_cpu[:-1]
                                 )
+                                if (
+                                    os.environ.get(
+                                        "VLLM_SM70_SPLITD_DEBUG"
+                                    )
+                                ):
+                                    logger.info(
+                                        "SM70 splitd build: n_pre=%s "
+                                        "q_lens=%s kv_lens=%s causal=%s "
+                                        "q_dtype=%s",
+                                        n_pre,
+                                        qo_diff.tolist(),
+                                        kv_lens_prefill_cpu.tolist(),
+                                        attn_metadata.causal,
+                                        self.q_data_type_prefill,
+                                    )
                                 if n_pre == 1 and sm70_splitd_admit(
                                     1,
                                     int(qo_diff[0]),
@@ -2066,14 +2085,22 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                     self.q_data_type_prefill,
                                 ):
                                     kv_len = int(kv_lens_prefill_cpu[0])
+                                    q_len = int(qo_diff[0])
+                                    dev = self.paged_kv_indptr.gpu.device
+                                    # Size the KV workspace in whole cache
+                                    # pages covering kv_len (page_size is a
+                                    # multiple of the kernel's 32-column
+                                    # tile, so capacity stays %32==0 and the
+                                    # padded tail rows are excluded by the
+                                    # kernel's mask). The causal offset uses
+                                    # the true (q_len, kv_len); the query/
+                                    # output buffers pad to the 64-row tile
+                                    # and forward slices the tail off.
                                     m_blocks = (
                                         (kv_len + self.page_size - 1)
                                         // self.page_size
                                     )
-                                    dev = (
-                                        self.paged_kv_indptr.gpu.device
-                                    )
-                                    k_ws = torch.empty(
+                                    k_ws = torch.zeros(
                                         m_blocks,
                                         self.page_size,
                                         self.num_kv_heads,
@@ -2081,9 +2108,19 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                         dtype=torch.float16,
                                         device=dev,
                                     )
-                                    v_ws = torch.empty_like(k_ws)
+                                    v_ws = torch.zeros_like(k_ws)
+                                    q_padded = ((q_len + 63) // 64) * 64
+                                    q_ws = torch.empty(
+                                        1,
+                                        q_padded,
+                                        self.num_qo_heads,
+                                        self.head_dim,
+                                        dtype=torch.float16,
+                                        device=dev,
+                                    )
+                                    out_ws = torch.empty_like(q_ws)
                                     splitd = (
-                                        int(qo_diff[0]),
+                                        q_len,
                                         kv_len,
                                         block_table_tensor[
                                             prefill_start, :m_blocks
@@ -2095,7 +2132,18 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                         ).unsqueeze(0),
                                         k_ws,
                                         v_ws,
+                                        q_ws,
+                                        out_ws,
                                     )
+                                    if os.environ.get(
+                                        "VLLM_SM70_SPLITD_DEBUG"
+                                    ):
+                                        logger.info(
+                                            "SM70 splitd ADMITTED: q=%s "
+                                            "kv=%s",
+                                            int(qo_diff[0]),
+                                            kv_len,
+                                        )
                     else:
                         shadow_kv = None
                         plan_indptr = paged_kv_indptr_prefill_cpu
@@ -2149,6 +2197,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     splitd_bt=splitd[3] if splitd else None,
                     splitd_k_ws=splitd[4] if splitd else None,
                     splitd_v_ws=splitd[5] if splitd else None,
+                    splitd_q_ws=splitd[6] if splitd else None,
+                    splitd_out_ws=splitd[7] if splitd else None,
                 )
 
         ## DECODE PATHWAY
@@ -2516,6 +2566,16 @@ class FlashInferImpl(AttentionImpl):
         q_len = pre.splitd_q_len
         kv_len = pre.splitd_kv_len
         H, D = prefill_query.shape[1], prefill_query.shape[2]
+        if os.environ.get("VLLM_SM70_SPLITD_DEBUG"):
+            logger.info(
+                "SM70 splitd run: q=%s kv=%s ws_m=%s ws_page=%s "
+                "cache_page=%s",
+                q_len,
+                kv_len,
+                pre.splitd_k_ws.shape[0],
+                pre.splitd_k_ws.shape[1],
+                kv_cache.shape[2],
+            )
         sm70_nvfp4_paged_stage_nhd(
             kv_cache,
             pre.splitd_bt_row,
@@ -2525,16 +2585,23 @@ class FlashInferImpl(AttentionImpl):
             k_scale,
             v_scale,
         )
+        q_ws = pre.splitd_q_ws
+        out_ws = pre.splitd_out_ws
+        q_ws[:, :q_len].copy_(prefill_query.view(1, q_len, H, D))
+        q_ws[:, q_len:].zero_()
         _get_sm70_splitd_op()(
-            prefill_query.view(1, q_len, H, D),
+            q_ws,
             pre.splitd_k_ws,
             pre.splitd_v_ws,
             pre.splitd_bt,
-            out.view(1, q_len, H, D),
+            out_ws,
             kv_len,
+            q_len,
             self.scale,
             True,
         )
+        # out is the layer-output slice [q_len, H, D].
+        out.copy_(out_ws[0, :q_len])
 
     def forward(
         self,
@@ -2766,6 +2833,17 @@ class FlashInferImpl(AttentionImpl):
                         max_q_len=attn_metadata.prefill.native_max_q_len,
                     )
                     return output_padded
+                if (
+                    self.splitd_enabled
+                    and os.environ.get("VLLM_SM70_SPLITD_DEBUG")
+                ):
+                    logger.info(
+                        "SM70 splitd fwd: layer=%s admit=%s kv=%s npre=%s",
+                        getattr(layer, "layer_name", id(layer)),
+                        attn_metadata.prefill.splitd_admit,
+                        attn_metadata.prefill.splitd_kv_len,
+                        num_prefill_tokens,
+                    )
                 if (
                     self.splitd_enabled
                     and attn_metadata.prefill.splitd_admit

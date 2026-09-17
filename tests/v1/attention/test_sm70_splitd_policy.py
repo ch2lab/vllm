@@ -20,16 +20,21 @@ def test_admit_long_context():
     assert _admit(8192, 262144)
     # q_len == kv_len (no cached prefix yet) is eligible
     assert _admit(1024, 1024)
+    # Non-tile-aligned lengths (spec-decode chunks) are admitted; the
+    # kernel handles them via padding (the true lengths set the offset).
+    assert _admit(4091, 4091)
+    assert _admit(4091, 8182)
+    assert _admit(4091, 26880)
+    assert _admit(2334, 26880)
 
 
 def test_reject_multi_request():
     assert not sm70_splitd_admit(2, 4096, 53792, True, torch.float16)
 
 
-def test_reject_q_below_min_or_unaligned():
+def test_reject_q_below_min():
     assert not _admit(32, 3136)
-    assert not _admit(100, 3136)
-    assert not _admit(1568, 3136)  # 1568 % 64 != 0
+    assert not _admit(63, 3136)
 
 
 def test_reject_q_above_max():
@@ -39,8 +44,6 @@ def test_reject_q_above_max():
 def test_reject_kv_out_of_range():
     assert not _admit(4096, 0)
     assert not _admit(4096, 262145)
-    assert not _admit(4096, 131071)  # not a multiple of 32
-    assert not _admit(1664, 4849)
 
 
 def test_reject_q_longer_than_kv():

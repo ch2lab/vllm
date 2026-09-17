@@ -329,8 +329,15 @@ def sm70_nvfp4_paged_stage_nhd(
     D = 2 * (F * 8 // 9)
     page = kv_cache.stride(0)
     M = k_out.shape[0]
-    assert M * N >= kv_len, "stage workspace smaller than kv_len"
-    grid = (M, H, N)
+    assert M * N >= kv_len, (
+        f"stage workspace smaller than kv_len: M={M} N={N} "
+        f"M*N={M * N} kv_len={kv_len}"
+    )
+    # Stage only the blocks that hold real tokens; any padded workspace
+    # rows (M > nb) keep their pre-allocated (zero) values.
+    nb = (kv_len + N - 1) // N
+    assert nb <= M, "stage workspace has fewer blocks than kv_len needs"
+    grid = (nb, H, N)
     for out, side, scale in ((k_out, 0, k_scale), (v_out, 1, v_scale)):
         _sm70_nvfp4_stage_nhd_side_kernel[grid](
             kv_cache,

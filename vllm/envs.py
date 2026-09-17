@@ -194,7 +194,7 @@ if TYPE_CHECKING:
     VLLM_SM70_NVFP4: bool = False
     VLLM_SM70_NVFP4_KV: bool = False
     VLLM_SM70_FLASHINFER_ATTN: bool = False
-    VLLM_SM70_SPLITD_PREFILL: bool = False
+    VLLM_SM70_SPLITD_PREFILL: bool = True
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
