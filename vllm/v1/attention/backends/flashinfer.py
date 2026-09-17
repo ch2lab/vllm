@@ -2085,8 +2085,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                     splitd = (
                                         int(qo_diff[0]),
                                         kv_len,
-                                        block_table_tensor[prefill_start][
-                                            0, :m_blocks
+                                        block_table_tensor[
+                                            prefill_start, :m_blocks
                                         ].contiguous(),
                                         torch.arange(
                                             m_blocks,
