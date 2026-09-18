@@ -2493,7 +2493,7 @@ class FlashInferImpl(AttentionImpl):
             and self.sm70_nvfp4_shadow
             and self.head_size == 256
             and self.num_kv_heads == 2
-            and self.num_heads == 24
+            and self.num_heads == 12
             and bool(_get_sm70_flashdecode_op())
         )
         if envs.VLLM_SM70_FLASHDECODE and not self._sm70_flashdecode:
@@ -2505,14 +2505,16 @@ class FlashInferImpl(AttentionImpl):
             )
         if self._sm70_flashdecode:
             # Persistent split-KV partial-state workspace: per call the need
-            # is R*H*splits*12*(D+2) fp32 with splits(R) = ceil(SM/(R*H)) —
-            # worst case over R is (SM + max_num_reqs*H)*12*(D+2) (the
-            # splits=1 regime dominates for large R).
+            # is R*H*splits*kRatio*(D+2) fp32 (q_rows=1 decode) with
+            # splits(R) = ceil(SM/(R*H)) — worst case over R is
+            # (SM + max_num_reqs*H)*kRatio*(D+2) (the splits=1 regime
+            # dominates for large R). kRatio = num_heads / num_kv_heads.
             _max_reqs = (
                 vllm_config.scheduler_config.max_num_seqs
                 if vllm_config is not None
                 else 1
             )
+            _k_ratio = self.num_heads // self.num_kv_heads
             self._sm70_fd_ws = torch.empty(
                 (
                     torch.cuda.get_device_properties(
@@ -2520,7 +2522,7 @@ class FlashInferImpl(AttentionImpl):
                     ).multi_processor_count
                     + _max_reqs * self.num_kv_heads
                 )
-                * 12
+                * _k_ratio
                 * (self.head_size + 2),
                 dtype=torch.float32,
                 device=torch.cuda.current_device(),

@@ -42,9 +42,9 @@
 
 namespace {
 
-constexpr int kHQ = 24;        // qo heads
-constexpr int kH = 2;          // kv heads (per GPU, TP2)
-constexpr int kRatio = 12;     // qo heads per kv head
+constexpr int kHQ = 12;        // qo heads (per GPU, TP2 of 24)
+constexpr int kH = 2;          // kv heads (per GPU, TP2 of 4)
+constexpr int kRatio = 6;      // qo heads per kv head (kHQ / kH)
 constexpr int kD = 256;        // head dim
 constexpr int kN = 16;         // tokens per page
 constexpr int kDD = kD / 2;    // 128 data bytes per token row
@@ -88,7 +88,7 @@ sm70_flashdecode_partition_kernel(
     const uint8_t* __restrict__ kv,        // raw LBHNC bytes
     const int* __restrict__ bt,            // [R, bt_cols]
     const int* __restrict__ kv_lens,       // [R]
-    float* __restrict__ ws,                // [R, kH, splits, kMaxQ, kRatio, kD+2]
+    float* __restrict__ ws,                // [R, kH, splits, q_rows, kRatio, kD+2]
     float k_scale, float v_scale, float sm_scale,
     int window_left, int splits, int q_rows, int bt_cols,
     int64_t page_stride, int64_t side_off) {
@@ -398,7 +398,7 @@ sm70_flashdecode_partition_kernel(
 __global__ void __launch_bounds__(kThreads)
 sm70_flashdecode_reduce_kernel(
     __half* __restrict__ out,        // [R, q_rows, kHQ, kD]
-    const float* __restrict__ ws,    // [R, kH, splits, kMaxQ, kRatio, kD+2]
+    const float* __restrict__ ws,    // [R, kH, splits, q_rows, kRatio, kD+2]
     int splits, int q_rows) {
   const int r = blockIdx.y;
   const int h = blockIdx.x;
@@ -453,7 +453,7 @@ void sm70_flashdecode(torch::stable::Tensor& q, torch::stable::Tensor& kv,
   STD_TORCH_CHECK(q.size(1) == q_rows && q_rows >= 1 && q_rows <= kMaxQ,
                   "sm70_flashdecode: q dim 1 must equal q_rows (1..8)");
   STD_TORCH_CHECK(q.size(2) == kHQ && q.size(3) == kD,
-                  "sm70_flashdecode: supports HQ=24, D=256");
+                  "sm70_flashdecode: supports HQ=12 (TP2), D=256");
   const int64_t H = kv.size(1) / 2;
   STD_TORCH_CHECK(H == kH && kv.size(2) == kN && kv.size(3) == kF,
                   "sm70_flashdecode: supports H=2, N=16, F=144");
