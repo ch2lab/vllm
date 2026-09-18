@@ -1128,31 +1128,6 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 self.num_qo_heads, self.use_dcp,
             )
 
-        # SM70 unified NVFP4 FlashDecoding decode/verify kernel
-        # (sm70_flashdecode op): split-KV partition kernel (fixed grid,
-        # cudagraph-safe) + log-sum-exp reduce, in-kernel NVFP4 dequant
-        # (dim-lane SIMD — no gather-based codegen, unlike the legacy
-        # Triton split-KV decode), 1x KV traffic. q=1 decode and q<=8
-        # speculative verify share the op. Off by default; op probe last
-        # so a missing extension never changes gate-off behavior.
-        self._sm70_flashdecode = (
-            envs.VLLM_SM70_FLASHDECODE
-            and self.sm70_nvfp4_shadow
-            and self.head_dim == 256
-            and self.num_kv_heads == 2
-            and self.num_qo_heads == 24
-            and self.page_size == 16
-            and not self.use_dcp
-            and bool(_get_sm70_flashdecode_op())
-        )
-        if envs.VLLM_SM70_FLASHDECODE and not self._sm70_flashdecode:
-            logger.info(
-                "SM70 flashdecode gate on but disabled: shadow=%s "
-                "head_dim=%s kv_heads=%s qo_heads=%s page=%s dcp=%s",
-                self.sm70_nvfp4_shadow, self.head_dim, self.num_kv_heads,
-                self.num_qo_heads, self.page_size, self.use_dcp,
-            )
-
         if (
             self.is_kvcache_nvfp4
             and get_flashinfer_layout_string(self.kv_cache_layout) != "HND"
@@ -1321,19 +1296,6 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 self._sm70_kvlens_dev = torch.zeros(
                     max_num_reqs, dtype=torch.int32, device=self.device
                 )
-
-        if self._sm70_flashdecode:
-            # Persistent split-KV partial-state workspace for the unified
-            # flashdecode op (q_rows=1 decode dispatch): per call the need
-            # is R*H*splits*12*(D+2) fp32 with splits(R) = ceil(SM/(R*H)),
-            # whose worst case over R is bounded by (SM + H)*12*(D+2);
-            # max_num_reqs >= 1 keeps the allocation valid.
-            self._sm70_fd_ws = torch.empty(
-                (self._sm70_sm_count + max_num_reqs * self.num_kv_heads)
-                * 12 * (self.head_dim + 2),
-                dtype=torch.float32,
-                device=self.device,
-            )
 
     @property
     def kv_cache_layout(self) -> KVCacheLayout:
@@ -2519,6 +2481,50 @@ class FlashInferImpl(AttentionImpl):
         vllm_config = get_current_vllm_config_or_none()
         # The layout is resolved after model construction, so read it lazily.
         self.cache_config = vllm_config.cache_config if vllm_config else None
+        # SM70 unified NVFP4 FlashDecoding decode/verify kernel
+        # (sm70_flashdecode op): fixed-grid split-KV partition + LSE reduce
+        # with in-kernel NVFP4 dequant (dim-lane SIMD, 1x KV reads). The
+        # authoritative gate for the dispatch in forward(); off by default,
+        # op probe last so a missing extension never changes gate-off
+        # behavior. DCP and page-size are fail-closed elsewhere (dispatch
+        # assert / C++ op check).
+        self._sm70_flashdecode = (
+            envs.VLLM_SM70_FLASHDECODE
+            and self.sm70_nvfp4_shadow
+            and self.head_size == 256
+            and self.num_kv_heads == 2
+            and self.num_heads == 24
+            and bool(_get_sm70_flashdecode_op())
+        )
+        if envs.VLLM_SM70_FLASHDECODE and not self._sm70_flashdecode:
+            logger.info(
+                "SM70 flashdecode gate on but disabled: shadow=%s "
+                "head_size=%s kv_heads=%s qo_heads=%s",
+                self.sm70_nvfp4_shadow, self.head_size, self.num_kv_heads,
+                self.num_heads,
+            )
+        if self._sm70_flashdecode:
+            # Persistent split-KV partial-state workspace: per call the need
+            # is R*H*splits*12*(D+2) fp32 with splits(R) = ceil(SM/(R*H)) —
+            # worst case over R is (SM + max_num_reqs*H)*12*(D+2) (the
+            # splits=1 regime dominates for large R).
+            _max_reqs = (
+                vllm_config.scheduler_config.max_num_seqs
+                if vllm_config is not None
+                else 1
+            )
+            self._sm70_fd_ws = torch.empty(
+                (
+                    torch.cuda.get_device_properties(
+                        torch.cuda.current_device()
+                    ).multi_processor_count
+                    + _max_reqs * self.num_kv_heads
+                )
+                * 12
+                * (self.head_size + 2),
+                dtype=torch.float32,
+                device=torch.cuda.current_device(),
+            )
         # Query pre-quantization needs a single dtype for the whole query tensor.
         # SM90 XQA needs BF16/FP16-Q for decode and FP8 for prefill,
         # so only enable this for SM100 trtllm-gen where both use FP8-Q.
