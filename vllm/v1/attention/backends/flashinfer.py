@@ -3211,35 +3211,39 @@ class FlashInferImpl(AttentionImpl):
             if not decode_with_flashinfer_trtllm_api:
                 assert isinstance(attn_metadata.decode, FIDecode)
                 if self._sm70_flashdecode:
-                    # SM70 unified FlashDecoding kernel (q=1 decode):
-                    # fixed-grid split-KV partition + LSE reduce, in-kernel
-                    # NVFP4 dequant, 1x KV reads. Reuses the per-step
-                    # shadow state (kv-lens, splits) of the SM70 NVFP4
-                    # decode path; writes the output in place.
-                    assert not use_dcp
-                    assert self.sinks is None
-                    assert not self.logits_soft_cap
-                    assert output.dtype == torch.float16
-                    HQ_, D_ = decode_query.shape[1], decode_query.shape[2]
-                    sm70_flashdecode_op(
-                        decode_query.reshape(
-                            num_decode_tokens, 1, HQ_, D_
-                        ),
-                        kv_cache,
-                        attn_metadata.decode.block_tables,
-                        attn_metadata.decode.shadow_kv_lens_dev,
-                        output[:num_decode_tokens].reshape(
-                            num_decode_tokens, 1, HQ_, D_
-                        ),
-                        layer._k_scale_float,
-                        layer._v_scale_float,
-                        self.scale,
-                        self.window_left,
-                        attn_metadata.decode.shadow_splits,
-                        1,
-                        self._sm70_fd_ws,
-                    )
-                    return output_padded
+                    # SM70 unified FlashDecoding kernel: fixed-grid
+                    # split-KV partition + LSE reduce, in-kernel NVFP4
+                    # dequant, 1x KV reads. Reuses the per-step shadow
+                    # state (kv-lens, splits) of the SM70 NVFP4 decode
+                    # path; writes the output in place. q_len_per_req==1
+                    # (pure decode) for now; verify (q>1) is routed
+                    # through the varlen prefill path and lands here in
+                    # a follow-up.
+                    if attn_metadata.decode.q_len_per_req == 1:
+                        assert not use_dcp
+                        assert self.sinks is None
+                        assert not self.logits_soft_cap
+                        assert output.dtype == torch.float16
+                        HQ_, D_ = decode_query.shape[1], decode_query.shape[2]
+                        sm70_flashdecode_op(
+                            decode_query.reshape(
+                                num_decode_tokens, 1, HQ_, D_
+                            ),
+                            kv_cache,
+                            attn_metadata.decode.block_tables,
+                            attn_metadata.decode.shadow_kv_lens_dev,
+                            output[:num_decode_tokens].reshape(
+                                num_decode_tokens, 1, HQ_, D_
+                            ),
+                            layer._k_scale_float,
+                            layer._v_scale_float,
+                            self.scale,
+                            self.window_left,
+                            attn_metadata.decode.shadow_splits,
+                            1,
+                            self._sm70_fd_ws,
+                        )
+                        return output_padded
                 if self.sm70_nvfp4_shadow:
                     # SM70 NVFP4: native in-kernel-dequant split-KV paged
                     # decode (no fp16 shadow buffer, no FA2 run).
