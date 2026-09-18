@@ -17,7 +17,35 @@ from .qwen3_dflash import (
     DFlashQwen3ForCausalLM,
     DFlashQwen3Model,
 )
+import os
+
+from vllm.platforms import current_platform
+
+from .dflash_sm70 import (
+    DFLASH_SM70_WIDE_OUTPUT_SCALE,
+    DFlashSM70MLP,
+    DFlashSM70RMSNorm,
+)
 from .utils import maybe_prefix
+
+
+def _use_sm70_bf16_emulation(config) -> bool:
+    declared_dtype = getattr(config, "dtype", None)
+    if declared_dtype is None:
+        declared_dtype = getattr(config, "torch_dtype", None)
+    is_bf16 = declared_dtype is torch.bfloat16 or str(declared_dtype).lower() in {
+        "bfloat16",
+        "bf16",
+        "torch.bfloat16",
+    }
+    enabled = os.getenv("VLLM_SM70_DFLASH2_BF16_EMULATION", "1").strip().lower()
+    enabled = enabled in ("1", "true", "yes", "on")
+    return (
+        enabled
+        and is_bf16
+        and current_platform.is_cuda()
+        and current_platform.is_device_capability(70)
+    )
 
 
 def _grouped_conv(
@@ -120,6 +148,26 @@ class DFlash2Qwen3DecoderLayer(DFlashQwen3DecoderLayer):
             quant_config=quant_config,
             prefix=prefix,
         )
+        self.use_sm70_bf16_emulation = _use_sm70_bf16_emulation(config)
+        if self.use_sm70_bf16_emulation:
+            runtime_dtype = vllm_config.model_config.dtype
+            if runtime_dtype != torch.float16:
+                raise ValueError(
+                    "BF16 DFlash2 on SM70 requires FP16 runtime transport; "
+                    f"got runtime dtype {runtime_dtype}."
+                )
+            self.self_attn.output_input_scale = DFLASH_SM70_WIDE_OUTPUT_SCALE
+            self.mlp = DFlashSM70MLP(self.mlp)
+            self.input_layernorm = DFlashSM70RMSNorm(
+                config.hidden_size,
+                config.rms_norm_eps,
+                runtime_dtype,
+            )
+            self.post_attention_layernorm = DFlashSM70RMSNorm(
+                config.hidden_size,
+                config.rms_norm_eps,
+                runtime_dtype,
+            )
         draft_config = config.dflash_config
         speculative_config = vllm_config.speculative_config
         assert speculative_config is not None
@@ -247,6 +295,20 @@ class DFlash2Qwen3Model(DFlashQwen3Model):
             start_layer_id=start_layer_id,
             prefix=prefix,
         )
+        self.use_sm70_bf16_emulation = _use_sm70_bf16_emulation(self.config)
+        if self.use_sm70_bf16_emulation:
+            runtime_dtype = vllm_config.model_config.dtype
+            self.hidden_norm = DFlashSM70RMSNorm(
+                self.config.hidden_size,
+                self.config.rms_norm_eps,
+                runtime_dtype,
+                residual_scale=1.0,
+            )
+            self.norm = DFlashSM70RMSNorm(
+                self.config.hidden_size,
+                self.config.rms_norm_eps,
+                runtime_dtype,
+            )
         draft_config = self.config.dflash_config
         self.input_embedding_scale = float(
             draft_config.get("input_embedding_scale", 1.0)

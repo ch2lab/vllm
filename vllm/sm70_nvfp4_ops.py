@@ -4,21 +4,20 @@
 """SM70 (Volta / V100) NVFP4 op bindings.
 
 Binds the SM70 NVFP4 ops (registered in the vLLM C extension) and gates them
-behind the ``VLLM_SM70_NVFP4`` env switch and an exact-SM70 hardware check:
+behind the ``VLLM_SM70_NVFP4`` env switch and an exact-SM70 hardware check.
 
-* ``sm70_nvfp4_dequant`` -- the active weight path: a single fused pass that
-  reads the checkpoint's natural row-major packed NVFP4 codes + the per-16
-  group FP8-E4M3 scales and emits a dense FP16 weight (the per-tensor global
-  scale is baked in). The linear layer then runs a plain FP16 GEMM.
-* ``sm70_nvfp4_marlin_gemm`` -- the Marlin NVFP4 GEMM (dequant fused
-  in-kernel), present for the macro-N layout-matched fast path.
+The 1x storage layout is the QPN2 4-bit column-major layout (one single
+4-bit weight per linear layer). Decode (m<=32) reads it directly via the
+QPN2 high-occupancy GEMM; prefill (m>32) dequants it to transient FP16 and
+runs a plain cuBLAS GEMM.
 """
 
 import torch
 
 from vllm import envs
 
-__all__ = ["is_exact_sm70", "is_enabled", "gemm", "dequant"]
+__all__ = ["is_exact_sm70", "is_enabled", "dequant", "dequant_from_qpn2",
+           "qpn2_prepare", "qpn2_gemm", "gemm_dispatch"]
 
 
 def is_exact_sm70() -> bool:
@@ -29,13 +28,7 @@ def is_exact_sm70() -> bool:
 
 
 def _op_registered() -> bool:
-    """True iff the SM70 NVFP4 ops are present in the loaded C extension.
-
-    The ops are registered by the stable extension (loaded as
-    ``vllm._C_stable_libtorch``) but live in the ``torch.ops._C`` namespace.
-    The lookup is guarded so an unloaded extension is treated as unavailable
-    rather than raising.
-    """
+    """True iff the SM70 NVFP4 ops are present in the loaded C extension."""
     try:
         return hasattr(torch.ops._C, "sm70_nvfp4_dequant")
     except Exception:
@@ -43,7 +36,7 @@ def _op_registered() -> bool:
 
 
 def is_enabled() -> bool:
-    """Return True iff the SM70 NVFP4 path (dequant -> FP16 GEMM) is usable."""
+    """Return True iff the SM70 NVFP4 path is usable."""
     if not envs.VLLM_SM70_NVFP4:
         return False
     if not is_exact_sm70():
@@ -51,65 +44,92 @@ def is_enabled() -> bool:
     return _op_registered()
 
 
-def gemm(a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size):
-    """SM70 NVFP4 GEMM: ``c = a @ b_q_weight^T`` (dequantized in-kernel).
-
-    Thin wrapper around ``torch.ops._C.sm70_nvfp4_marlin_gemm``. The kernel
-    applies ``global_scale`` internally as the epilogue alpha. The SM70
-    fast/skip_flop dequant emits 2^-22x the true dequantized weight, so the
-    caller's (natural-scale) ``global_scale`` is multiplied by 2^22 before the
-    call -- the kernel's internal 2^-22 then nets to 1.0, giving the correct
-    end-to-end output magnitude for natural-scale checkpoints. The raw C++ op
-    is unchanged; this compensation lives in the wrapper. ``group_size`` is 16
-    for NVFP4.
-
-    Args:
-        a: FP16 activation tensor of shape (m, k).
-        c: FP16 output buffer of shape (m, n).
-        b_q_weight: NVFP4-packed weight (uint8).
-        b_scales: group-16 scales (fp8_e4m3fn).
-        global_scale: per-tensor FP32 scale (natural-scale, not pre-scaled).
-        m: number of rows of ``a`` / ``c``.
-        n: number of output columns.
-        k: inner (reduction) dimension.
-        group_size: NVFP4 group size (16).
-
-    Returns:
-        The output tensor (``c``).
-    """
-    # The SM70 fast/skip_flop dequant emits 2^-22x the true dequantized weight
-    # (it omits the FP4->FP16 and FP8->FP16 exponent biases). Multiply the
-    # caller's scale by 2^22 so the kernel's internal 2^-22 nets to 1.0.
-    #
-    # NVFP4 convention: weight_global_scale is a DENORMALIZATION factor
-    # (divisor), not a multiplier. The true dequantized weight is:
-    #   w_true = w_fp4_code * group_scale / weight_global_scale
-    # So the epilogue must use 1/weight_global_scale (the inverse).
-    global_scale = (1.0 / global_scale) * 4194304.0  # (1/GS) * 2^22
-    return torch.ops._C.sm70_nvfp4_marlin_gemm(
-        a, c, b_q_weight, b_scales, global_scale, m, n, k, group_size
-    )
+def qpn2_prepare(weight, weight_scale):
+    """Prepack the checkpoint row-major NVFP4 weight (n, k//2) uint8 and
+    per-16-group E4M3 scales (n, k//16) into the QPN2 column-major layout
+    (one-time, at weight-load). Returns (codes, scales), both uint8."""
+    return torch.ops._C.sm70_nvfp4_qpn2_prepare(
+        weight.contiguous(), weight_scale.contiguous())
 
 
-def dequant(weight, weight_scale, global_scale):
-    """Dequant the checkpoint's natural NVFP4 weight to a dense FP16 weight.
+def qpn2_gemm(out, input, codes, scales, global_scale, split_k=8, nacc=1):
+    """SM70 NVFP4 QPN2 high-occupancy decode GEMM: out = input @ W^T.
 
-    Single fused pass (SM70 C++ kernel): reads the row-major packed NVFP4 codes
-    + the per-16-group FP8-E4M3 scales, and writes the dense FP16 weight with
-    the per-tensor global_scale (the layer's weight_global_scale multiplier)
-    baked in. Replaces the multi-pass torch dequant that dominated the on-the-
-    fly dequant cost for the large (n%64==0) layers.
-
-    Args:
-        weight: packed NVFP4 weight (uint8), shape (n, k//2).
-        weight_scale: per-16-group FP8-E4M3 scale, shape (n, k//16).
-        global_scale: per-tensor FP32 multiplier (layer.weight_global_scale).
-
-    Returns:
-        Dense FP16 weight of shape (n, k).
+    For m <= 32 (decode). global_scale is the layer raw weight_global_scale.
     """
     if torch.is_tensor(global_scale):
         global_scale = float(global_scale.item())
+    torch.ops._C.sm70_nvfp4_qpn2_gemm(
+        out, input, codes, scales, float(global_scale),
+        int(split_k), int(nacc))
+
+
+def dequant(weight, weight_scale, global_scale):
+    """Dequant natural NVFP4 weight (n, k//2) uint8 + E4M3 scales to (n,k)
+    FP16. Single fused SM70 C++ kernel (E2/M1 4-LUT + fp16 math)."""
+    if torch.is_tensor(global_scale):
+        global_scale = float(global_scale.item())
     return torch.ops._C.sm70_nvfp4_dequant(
-        weight.contiguous(), weight_scale.contiguous(), float(global_scale)
-    )
+        weight.contiguous(), weight_scale.contiguous(), float(global_scale))
+
+
+def dequant_from_qpn2(codes, scales, global_scale):
+    """Dequant QPN2 4-bit layout (n,k//2) codes + (n,k//16) scales to
+    natural (n,k) FP16 weight. Same result as dequant(raw_w, raw_s, gs)."""
+    if torch.is_tensor(global_scale):
+        global_scale = float(global_scale.item())
+    return torch.ops._C.sm70_nvfp4_dequant_from_qpn2(
+        codes, scales, float(global_scale))
+
+
+def gemm_dispatch(out, input, qpn2_codes, qpn2_scales, qpn2_global_scale,
+                  split_k=8, nacc=1):
+    """Single-op dispatch: QPN2 for m<=32, dequant+cuBLAS for m>32.
+    The m-based decision is inside C++ (concrete int)."""
+    if torch.is_tensor(qpn2_global_scale):
+        qpn2_global_scale = float(qpn2_global_scale.item())
+    torch.ops._C.sm70_nvfp4_gemm_dispatch(
+        out, input, qpn2_codes, qpn2_scales, float(qpn2_global_scale),
+        int(split_k), int(nacc))
+
+
+try:
+    from torch.library import register_fake as _register_fake
+except ImportError:
+    from torch.library import impl_abstract as _register_fake
+
+
+@_register_fake("_C::sm70_nvfp4_dequant")
+def _sm70_nvfp4_dequant_fake(weight, weight_scale, global_scale):
+    n = weight.shape[0]
+    k = weight.shape[1] * 2
+    return torch.empty(n, k, dtype=torch.float16, device=weight.device)
+
+
+@_register_fake("_C::sm70_nvfp4_dequant_from_qpn2")
+def _sm70_nvfp4_dequant_from_qpn2_fake(codes, scales, global_scale):
+    n = codes.shape[0]
+    k = codes.shape[1] * 2
+    return torch.empty(n, k, dtype=torch.float16, device=codes.device)
+
+
+@_register_fake("_C::sm70_nvfp4_qpn2_prepare")
+def _sm70_nvfp4_qpn2_prepare_fake(weight, weight_scale):
+    n = weight.shape[0]
+    k = weight.shape[1] * 2
+    dev = weight.device
+    codes = torch.empty(n, k // 2, dtype=torch.uint8, device=dev)
+    scales = torch.empty(n, k // 16, dtype=torch.uint8, device=dev)
+    return codes, scales
+
+
+@_register_fake("_C::sm70_nvfp4_qpn2_gemm")
+def _sm70_nvfp4_qpn2_gemm_fake(out, input, codes, scales, global_scale,
+                              split_k, nacc):
+    return out
+
+
+@_register_fake("_C::sm70_nvfp4_gemm_dispatch")
+def _sm70_nvfp4_gemm_dispatch_fake(out, input, qpn2_codes, qpn2_scales,
+                                   qpn2_global_scale, split_k, nacc):
+    return None

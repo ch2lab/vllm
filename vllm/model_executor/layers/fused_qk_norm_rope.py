@@ -193,7 +193,7 @@ def fused_qk_rmsnorm_rope_gate(
 
     if positions.ndim not in (1, 2):
         raise ValueError(f"positions must be 1D or 2D, got shape={positions.shape}")
-    if positions.shape[-1] != q_gate.shape[0]:
+    if not torch.compiler.is_compiling() and positions.shape[-1] != q_gate.shape[0]:
         raise ValueError(
             "positions token dimension must match q_gate, "
             f"got {positions.shape[-1]} and {q_gate.shape[0]}"

@@ -747,8 +747,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
   cuda_archs_loose_intersection(SM70_NVFP4_ARCHS "7.0" "${CUDA_ARCHS}")
   if(SM70_NVFP4_ARCHS)
     set(SM70_NVFP4_SRCS
-       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_gemm.cu"
-       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_dequant.cu")
+       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_dequant.cu"
+       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_qpn2.cu"
+       "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_dispatch.cu")
     set_gencode_flags_for_srcs(
       SRCS "${SM70_NVFP4_SRCS}"
       CUDA_ARCHS "${SM70_NVFP4_ARCHS}")

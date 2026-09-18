@@ -268,6 +268,9 @@ class DFlashQwen3Attention(nn.Module):
         q, k = self.rotary_emb(positions, q, k)
 
         attn_output = self.attn(q, k, v)
+        output_input_scale = getattr(self, "output_input_scale", 1.0)
+        if output_input_scale != 1.0:
+            attn_output = attn_output / output_input_scale
         output, _ = self.o_proj(attn_output)
         return output
 

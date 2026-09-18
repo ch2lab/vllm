@@ -166,7 +166,7 @@ from vllm.model_executor.kernels.linear.nvfp4.pytorch import (
     TorchNvFp4LinearKernel,
 )
 from vllm.model_executor.kernels.linear.nvfp4.sm70 import (
-    Sm70MarlinNvFp4LinearKernel,
+    Sm70NvFp4LinearKernel,
 )
 from vllm.model_executor.kernels.linear.scaled_mm import (
     Fp8BlockScaledMMLinearKernel,
@@ -549,7 +549,7 @@ _POSSIBLE_NVFP4_KERNELS: dict[PlatformEnum, list[type[NvFp4LinearKernel]]] = {
         # SM70 (V100/Volta) weight-only NVFP4; first so the W4A4 registry walk
         # selects it on exact SM70 + VLLM_SM70_NVFP4 (inert everywhere else,
         # since is_supported fails closed outside SM70+env).
-        Sm70MarlinNvFp4LinearKernel,
+        Sm70NvFp4LinearKernel,
         FlashInferCuteDslNvFp4LinearKernel,
         FlashInferCutlassNvFp4LinearKernel,
         FlashInferB12xNvFp4LinearKernel,
@@ -1050,8 +1050,8 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
         # Order here is NOT a priority order: W4A16 selection comes from the
         # force branch below (auto backend) and W4A4 selection from the
         # _POSSIBLE_NVFP4_KERNELS registry walk; this tuple is membership-only.
-        # Sm70MarlinNvFp4LinearKernel is active only on exact SM70 + VLLM_SM70_NVFP4.
-        Sm70MarlinNvFp4LinearKernel,
+        # Sm70NvFp4LinearKernel is active only on exact SM70 + VLLM_SM70_NVFP4.
+        Sm70NvFp4LinearKernel,
         FlashInferCuteDslNvFp4W4A16LinearKernel,
         MarlinNvFp4LinearKernel,
         HummingNvFp4LinearKernel,
@@ -1098,11 +1098,11 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
         # is_supported fails closed unless we are on exact SM70 with
         # VLLM_SM70_NVFP4 and a registered op, so the Marlin/CuTe-DSL
         # behavior below is preserved everywhere else.
-        sm70_supported, _ = Sm70MarlinNvFp4LinearKernel.is_supported(
+        sm70_supported, _ = Sm70NvFp4LinearKernel.is_supported(
             compute_capability
         )
         if sm70_supported:
-            force_kernel = Sm70MarlinNvFp4LinearKernel
+            force_kernel = Sm70NvFp4LinearKernel
         else:
             # Weight-only: prefer FlashInfer CuTe-DSL W4A16 on SM100/103,
             # otherwise Marlin.
