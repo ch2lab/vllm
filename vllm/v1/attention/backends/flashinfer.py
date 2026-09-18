@@ -3223,11 +3223,13 @@ class FlashInferImpl(AttentionImpl):
                     # split-KV partition + LSE reduce, in-kernel NVFP4
                     # dequant, 1x KV reads. Reuses the per-step shadow
                     # state (kv-lens, splits) of the SM70 NVFP4 decode
-                    # path; writes the output in place. q_len_per_req==1
-                    # (pure decode) for now; verify (q>1) is routed
+                    # path; writes the output in place. Pure q=1 decode
+                    # only for now (FIDecode carries no per-request q
+                    # lens: total rows == request count iff every
+                    # request has exactly one); verify (q>1) is routed
                     # through the varlen prefill path and lands here in
                     # a follow-up.
-                    if attn_metadata.decode.q_len_per_req == 1:
+                    if num_decode_tokens == attn_metadata.num_decodes:
                         assert not use_dcp
                         assert self.sinks is None
                         assert not self.logits_soft_cap
