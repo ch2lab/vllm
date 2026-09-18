@@ -774,6 +774,16 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
     list(APPEND VLLM_STABLE_EXT_SRC "${SM70_NVFP4_KV_SRCS}")
     list(APPEND VLLM_GPU_FLAGS "-DENABLE_NVFP4_SM70=1")
     message(STATUS "Building SM70 NVFP4 KV-cache store for archs: ${SM70_NVFP4_ARCHS}")
+
+    # SM70 (V100) unified NVFP4 FlashDecoding decode/verify kernel (split-KV,
+    # fixed grid, cudagraph-safe).
+    set(SM70_FLASHDECODE_SRCS
+       "csrc/libtorch_stable/attention/sm70_flashdecode.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${SM70_FLASHDECODE_SRCS}"
+      CUDA_ARCHS "${SM70_NVFP4_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SM70_FLASHDECODE_SRCS}")
+    message(STATUS "Building SM70 flashdecode kernel for archs: ${SM70_NVFP4_ARCHS}")
   endif()
 
   # DeepSeek V3 fused A GEMM kernel (requires SM 9.0+, Hopper and later)

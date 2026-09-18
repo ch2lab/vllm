@@ -195,6 +195,8 @@ if TYPE_CHECKING:
     VLLM_SM70_NVFP4_KV: bool = False
     VLLM_SM70_FLASHINFER_ATTN: bool = False
     VLLM_SM70_SPLITD_PREFILL: bool = True
+    VLLM_SM70_VARLEN_DECODE: bool = False
+    VLLM_SM70_FLASHDECODE: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
@@ -1556,6 +1558,27 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # turned on.
     "VLLM_SM70_FLASHINFER_ATTN": lambda: bool(
         int(os.getenv("VLLM_SM70_FLASHINFER_ATTN", "0"))
+    ),
+    # SM70 (Volta V100) NVFP4 KV: route q=1 decode through the varlen
+    # paged-prefill path (SM70PAGED in-kernel-dequant kernel, the same one
+    # that services the DFlash2 small-q verify) instead of the Triton
+    # in-kernel-dequant split-KV decode kernel. The Triton kernel's
+    # gather-based fp4 dequant codegen on sm_70 runs at ~1.8 GB/s effective
+    # KV bandwidth, ~5x below the paged-prefill path, so decode degrades
+    # ~5x faster with context. Off by default so the decode path is
+    # byte-identical unless explicitly turned on.
+    "VLLM_SM70_VARLEN_DECODE": lambda: bool(
+        int(os.getenv("VLLM_SM70_VARLEN_DECODE", "0"))
+    ),
+    # SM70 (Volta V100) unified NVFP4 FlashDecoding decode/verify kernel:
+    # split-KV partition kernel (fixed grid, cudagraph-safe) + log-sum-exp
+    # reduce, in-kernel NVFP4 dequant, GQA 1x KV reads. Covers q=1 decode
+    # and q<=8 speculative verify. Backed by
+    # csrc/libtorch_stable/attention/sm70_flashdecode.cu (op sm70_flashdecode,
+    # built only for sm_70). Off by default; independent of
+    # VLLM_SM70_VARLEN_DECODE (kept as a separate fallback).
+    "VLLM_SM70_FLASHDECODE": lambda: bool(
+        int(os.getenv("VLLM_SM70_FLASHDECODE", "0"))
     ),
     # SM70 (Volta V100) splitd D256 paged prefill kernel (1Cat port). When
     # enabled, full-attention prefill steps that pass the admission contract

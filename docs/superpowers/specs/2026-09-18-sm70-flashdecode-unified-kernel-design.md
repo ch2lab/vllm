@@ -26,7 +26,18 @@ Qwen3.8-27B-QUASAR-NVFP4 @ V100/SM70 TP2 的长上下文 decode 衰减（spec-OF
 4. 质量: token 级 A/B vs SM120 参照（192.168.8.208:8000）+ vs Fix A 路径，near-tie-only 判据（沿用 memory 10168 定案标准）。
 5. 生产收益: spec-ON 长上下文衰减（59→35 tok/s）由同一 kernel 结构性解决（verify grid 设计定死，不依赖 flashinfer plan 自动分区）。
 
-**待回填基线**（bench 链运行中，完成后更新本节）: Fix A（`VLLM_SM70_VARLEN_DECODE=1`）的 q=1 全曲线 — 54K 实测 20.0ms/step (49.94 tok/s)，为现状的 15.3×；108K/216K/260K 点待 ladder 完成。新 kernel 的 q=1 目标相应调整为「不低于 Fix A 路径，且在 260K+ 与并发场景占优」；verify 路径目标为消除 cudagraph plan 退化。
+**实测基线（2026-09-18, `/tmp/bench_sm70_varlen.py`）** — 重大修正:
+
+| 上下文 | 现状 Triton | Fix A (varlen 路由) | 1Cat |
+|---|---|---|---|
+| 54K | 306.0ms | **20.0ms (49.9 tok/s)** | 121.2ms |
+| 108K | 587.3ms | **18.3ms (54.8)** | 131.9ms |
+| 216K | 1150.3ms | **20.0ms (50.0)** | 131.0ms |
+| 260K | 1423.1ms | 待回填（~12:15） | 135.5ms |
+
+- **Fix A（纯 Python flag, SM70PAGED varlen 路由）已经实现平曲线**（20ms 平台，54K→216K 零衰减），且 **6× 快于 1Cat** —— 之前"SM70PAGED 边际 ~1ms/K"的估计是把 DFlash2 verify 步的 drafter/GDN 开销误记到了 KV 扫描头上。
+- **kernel 价值重新定界**: (1) q=1 decode 已由 Fix A 解决，kernel 目标是**不低于 Fix A 路径**（性能上追平即合格）；(2) 真正的差异化 = **结构性解决生产 spec-ON 长上下文衰减**（cudagraph 下 flashinfer plan grid 固定 → 自动 split-KV 分区可能未生效；本 kernel 的 grid 按设计定死、分区数 plan 时选定，不依赖运行时 plan）；(3) 单 .so 自主控制，摆脱 flashinfer Python plan 每步开销。
+- 验收相应调整: 质量门槛不变（token 级 A/B）；性能合格线 = q=1 不劣于 Fix A；生产 spec-ON 54K/108K 衰减（59→35 tok/s）是独立验证项（Task 6 Step 2）。
 
 ## 3. 范围与集成
 

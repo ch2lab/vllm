@@ -84,6 +84,7 @@ from vllm.v1.attention.ops.dcp import (
 )
 from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
 from vllm.v1.attention.ops.sm70_nvfp4_decode import sm70_nvfp4_paged_decode
+from vllm.v1.attention.ops.sm70_flashdecode import sm70_flashdecode_op
 from vllm.v1.attention.ops.sm70_nvfp4_dequant import (
     sm70_nvfp4_paged_dequant,
     sm70_nvfp4_paged_stage_nhd,
@@ -647,6 +648,7 @@ class FlashInferBackend(AttentionBackend):
 
 
 _SM70_SPLITD_OP = None
+_SM70_FLASHDECODE_OP = None
 """Cached splitd paged prefill op (False = extension not built)."""
 
 _SPLITD_ROUTE_STATS = {"routed": 0, "fallback": 0}
@@ -667,6 +669,20 @@ def _get_sm70_splitd_op():
         except Exception:
             _SM70_SPLITD_OP = False
     return _SM70_SPLITD_OP
+
+
+def _get_sm70_flashdecode_op():
+    """Lazily look up the unified flashdecode op (False if not built)."""
+    global _SM70_FLASHDECODE_OP
+    if _SM70_FLASHDECODE_OP is None:
+        try:
+            # Built only for sm_70 (build_sm70.sh); absent on other archs.
+            import vllm  # noqa: F401
+
+            _SM70_FLASHDECODE_OP = torch.ops._C.sm70_flashdecode
+        except Exception:
+            _SM70_FLASHDECODE_OP = False
+    return _SM70_FLASHDECODE_OP
 
 
 @dataclass
@@ -956,6 +972,21 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             self.prefill_fixed_split_size = -1
             self.disable_split_kv = False
 
+        # SM70 NVFP4: route q=1 decode through the varlen paged-prefill path
+        # (SM70PAGED in-kernel-dequant kernel) instead of the Triton
+        # in-kernel-dequant split-KV decode kernel, whose gather-based fp4
+        # dequant codegen on sm_70 runs at ~1.8 GB/s effective KV bandwidth
+        # (~5x below the paged-prefill path), making decode degrade far
+        # faster with context. The paged-prefill kernel already services the
+        # DFlash2 small-q verify (qo_len << kv_len), so this only changes
+        # which kernel the pure q=1 decode step uses.
+        self._sm70_varlen_decode = (
+            envs.VLLM_SM70_VARLEN_DECODE
+            and sm70_nvfp4_kv_enabled()
+            and kv_cache_spec.kv_quant_mode != KVQuantMode.NONE
+            and str(vllm_config.cache_config.cache_dtype).startswith("nvfp4")
+        )
+
         self.compilation_config = vllm_config.compilation_config
         self.max_num_batched_tokens = (
             vllm_config.scheduler_config.max_num_batched_tokens
@@ -1095,6 +1126,31 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 "head_dim=%s kv_heads=%s qo_heads=%s dcp=%s",
                 self.sm70_nvfp4_shadow, self.head_dim, self.num_kv_heads,
                 self.num_qo_heads, self.use_dcp,
+            )
+
+        # SM70 unified NVFP4 FlashDecoding decode/verify kernel
+        # (sm70_flashdecode op): split-KV partition kernel (fixed grid,
+        # cudagraph-safe) + log-sum-exp reduce, in-kernel NVFP4 dequant
+        # (dim-lane SIMD — no gather-based codegen, unlike the legacy
+        # Triton split-KV decode), 1x KV traffic. q=1 decode and q<=8
+        # speculative verify share the op. Off by default; op probe last
+        # so a missing extension never changes gate-off behavior.
+        self._sm70_flashdecode = (
+            envs.VLLM_SM70_FLASHDECODE
+            and self.sm70_nvfp4_shadow
+            and self.head_dim == 256
+            and self.num_kv_heads == 2
+            and self.num_qo_heads == 24
+            and self.page_size == 16
+            and not self.use_dcp
+            and bool(_get_sm70_flashdecode_op())
+        )
+        if envs.VLLM_SM70_FLASHDECODE and not self._sm70_flashdecode:
+            logger.info(
+                "SM70 flashdecode gate on but disabled: shadow=%s "
+                "head_dim=%s kv_heads=%s qo_heads=%s page=%s dcp=%s",
+                self.sm70_nvfp4_shadow, self.head_dim, self.num_kv_heads,
+                self.num_qo_heads, self.page_size, self.use_dcp,
             )
 
         if (
@@ -1265,6 +1321,19 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 self._sm70_kvlens_dev = torch.zeros(
                     max_num_reqs, dtype=torch.int32, device=self.device
                 )
+
+        if self._sm70_flashdecode:
+            # Persistent split-KV partial-state workspace for the unified
+            # flashdecode op (q_rows=1 decode dispatch): per call the need
+            # is R*H*splits*12*(D+2) fp32 with splits(R) = ceil(SM/(R*H)),
+            # whose worst case over R is bounded by (SM + H)*12*(D+2);
+            # max_num_reqs >= 1 keeps the allocation valid.
+            self._sm70_fd_ws = torch.empty(
+                (self._sm70_sm_count + max_num_reqs * self.num_kv_heads)
+                * 12 * (self.head_dim + 2),
+                dtype=torch.float32,
+                device=self.device,
+            )
 
     @property
     def kv_cache_layout(self) -> KVCacheLayout:
@@ -1657,6 +1726,11 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         causal = common_attn_metadata.causal
         route_decode = causal or self.use_xqa
+        if route_decode and self._sm70_varlen_decode:
+            # SM70 NVFP4: service q=1 decode as small-q varlen prefill so
+            # the paged-prefill kernel (in-kernel fp4 dequant) handles it
+            # instead of the slow Triton decode kernel (see the flag).
+            route_decode = False
         if route_decode:
             num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
                 split_decodes_and_prefills(
@@ -3136,6 +3210,36 @@ class FlashInferImpl(AttentionImpl):
 
             if not decode_with_flashinfer_trtllm_api:
                 assert isinstance(attn_metadata.decode, FIDecode)
+                if self._sm70_flashdecode:
+                    # SM70 unified FlashDecoding kernel (q=1 decode):
+                    # fixed-grid split-KV partition + LSE reduce, in-kernel
+                    # NVFP4 dequant, 1x KV reads. Reuses the per-step
+                    # shadow state (kv-lens, splits) of the SM70 NVFP4
+                    # decode path; writes the output in place.
+                    assert not use_dcp
+                    assert self.sinks is None
+                    assert not self.logits_soft_cap
+                    assert output.dtype == torch.float16
+                    HQ_, D_ = decode_query.shape[1], decode_query.shape[2]
+                    sm70_flashdecode_op(
+                        decode_query.reshape(
+                            num_decode_tokens, 1, HQ_, D_
+                        ),
+                        kv_cache,
+                        attn_metadata.decode.block_tables,
+                        attn_metadata.decode.shadow_kv_lens_dev,
+                        output[:num_decode_tokens].reshape(
+                            num_decode_tokens, 1, HQ_, D_
+                        ),
+                        layer._k_scale_float,
+                        layer._v_scale_float,
+                        self.scale,
+                        self.window_left,
+                        attn_metadata.decode.shadow_splits,
+                        1,
+                        self._sm70_fd_ws,
+                    )
+                    return output_padded
                 if self.sm70_nvfp4_shadow:
                     # SM70 NVFP4: native in-kernel-dequant split-KV paged
                     # decode (no fp16 shadow buffer, no FA2 run).
