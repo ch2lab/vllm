@@ -37,9 +37,10 @@ SD = D // 16
 F = DD + SD
 
 
-def make_case(R=2, Q=1, seed=0, kv_lens=(275, 33), sf_max=31):
+def make_case(R=2, Q=1, seed=0, kv_lens=(275, 33), sf_max=31, page=N):
+    N_ = page
     g = torch.Generator().manual_seed(seed)
-    kv = torch.randint(0, 255, (B, 2 * H, N, F), dtype=torch.uint8,
+    kv = torch.randint(0, 255, (B, 2 * H, N_, F), dtype=torch.uint8,
                        generator=g)
     # Scale bytes: clamp the physical scale region to <= sf_max. Default
     # sf_max=31 (e4m3 e <= 3) keeps the op tests' scores in an fp32-friendly
@@ -51,12 +52,12 @@ def make_case(R=2, Q=1, seed=0, kv_lens=(275, 33), sf_max=31):
     S0 = kv.stride(0)
     flat = kv.flatten()
     idx = (
-        np.arange(B)[:, None, None, None] * S0
-        + np.array([0, H * N * F])[None, :, None, None]
-        + np.arange(H)[None, None, :, None] * (N * SD)
-        + np.arange(N)[None, None, None, :] * SD
-        + np.arange(SD)[None, None, None, None]
-        + H * N * DD
+        np.arange(B)[:, None, None, None, None] * S0
+        + np.array([0, H * N_ * F])[None, :, None, None, None]
+        + np.arange(H)[None, None, :, None, None] * (N_ * SD)
+        + np.arange(N_)[None, None, None, :, None] * SD
+        + np.arange(SD)[None, None, None, None, :]
+        + H * N_ * DD
     )
     flat[idx] = flat[idx] % (sf_max + 1)
     bt = torch.randperm(B, generator=g).view(R, -1)[: :, : 64].to(torch.int32)
@@ -242,6 +243,26 @@ def test_op_q1_matches_reference():
     R, Q, HQ_, D_ = q.shape
     H_ = kv.shape[1] // 2
     splits = 4
+    ws = torch.zeros(
+        R * H_ * splits * Q * 6 * (D_ + 2), dtype=torch.float32,
+        device="cuda")
+    out = torch.empty_like(q, device="cuda")
+    sm70_flashdecode_op(
+        q.cuda(), kv.cuda(), bt.cuda(), kv_lens.cuda(), out, 1.0, 1.0,
+        1.0 / 16, -1, splits=splits, q_rows=1, workspace=ws)
+    ref = sm70_nvfp4_reference_attention(
+        q, kv, bt, kv_lens, 1.0, 1.0, 1.0 / 16, -1)
+    assert torch.allclose(out.cpu().float(), ref, atol=1e-2, rtol=1e-2)
+
+
+def test_op_chunked_blocks():
+    """page=32 blocks: in-block chunk offsets, split boundaries not 16-
+    aligned (100/3, 71/3), and partial trailing blocks (100 = 3x32+4)."""
+    q, kv, bt, kv_lens = make_case(R=2, Q=1, seed=8,
+                                   kv_lens=(100, 71), page=32)
+    R, Q, HQ_, D_ = q.shape
+    H_ = kv.shape[1] // 2
+    splits = 3
     ws = torch.zeros(
         R * H_ * splits * Q * 6 * (D_ + 2), dtype=torch.float32,
         device="cuda")

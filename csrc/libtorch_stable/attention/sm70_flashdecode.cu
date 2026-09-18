@@ -46,7 +46,7 @@ constexpr int kHQ = 12;        // qo heads (per GPU, TP2 of 24)
 constexpr int kH = 2;          // kv heads (per GPU, TP2 of 4)
 constexpr int kRatio = 6;      // qo heads per kv head (kHQ / kH)
 constexpr int kD = 256;        // head dim
-constexpr int kN = 16;         // tokens per page
+constexpr int kN = 16;         // tokens per staging chunk (compile-time)
 constexpr int kDD = kD / 2;    // 128 data bytes per token row
 constexpr int kSD = kD / 16;   // 16 scale bytes per token row
 constexpr int kF = kDD + kSD;  // 144 bytes per token row
@@ -90,7 +90,7 @@ sm70_flashdecode_partition_kernel(
     const int* __restrict__ kv_lens,       // [R]
     float* __restrict__ ws,                // [R, kH, splits, q_rows, kRatio, kD+2]
     float k_scale, float v_scale, float sm_scale,
-    int window_left, int splits, int q_rows, int bt_cols,
+    int window_left, int splits, int q_rows, int bt_cols, int n_page,
     int64_t page_stride, int64_t side_off) {
   const int r = blockIdx.z;
   const int h = blockIdx.y;
@@ -148,18 +148,23 @@ sm70_flashdecode_partition_kernel(
     return;
   }
 
-  const int b_lo = lo / kN;
-  const int nb_hi = (kv_len + kN - 1) / kN;
-  const int span = nb_hi - b_lo;
-  const int b0 = b_lo + span * sp / splits;
-  const int b1 = b_lo + span * (sp + 1) / splits;
-  if (b0 >= b1) {
+  // Token-level split range for this partition: [t_a, t_b). The chunk grid
+  // is 16-token units; n_page is a multiple of 16, so a chunk never
+  // straddles a block boundary.
+  const int64_t t_a = (int64_t)lo + ((int64_t)kv_len - lo) * sp / splits;
+  const int64_t t_b =
+      (int64_t)lo + ((int64_t)kv_len - lo) * (sp + 1) / splits;
+  if (t_a >= t_b) {
     for (int qq = 0; qq < q_rows; qq++) write_empty_row(qq);
     return;
   }
+  const int c0 = (int)(t_a / kN);
+  const int c1 = (int)((t_b - 1) / kN);
 
-  // Stage one page (both sides): 2*N*9 = 288 x 16B chunks, synchronous.
-  auto stage_page = [&](int b) {
+  // Stage one 16-token chunk of a block (both sides): 288 x 16B,
+  // synchronous. The chunk starts at token n0 within block b (n0 a
+  // multiple of kN; the block holds n_page tokens).
+  auto stage_chunk = [&](int b, int n0) {
     const int64_t base =
         (int64_t)__ldg(bt + r * bt_cols + b) * page_stride;
     constexpr int kChunks = 2 * kN * (kF / 16);  // 288
@@ -170,10 +175,10 @@ sm70_flashdecode_partition_kernel(
       const int f16 = rem % (kF / 16);  // 16B chunk in the 144B row
       int64_t off;
       if (f16 < kDD / 16) {  // data chunk
-        off = (int64_t)h * (kN * kDD) + n * kDD + f16 * 16;
+        off = (int64_t)h * (n_page * kDD) + (n0 + n) * kDD + f16 * 16;
       } else {  // scale chunk (exactly one 16B chunk)
-        off = (int64_t)kH * (kN * kDD) + (int64_t)h * (kN * kSD) +
-              n * kSD + (f16 - kDD / 16) * 16;
+        off = (int64_t)kH * (n_page * kDD) + (int64_t)h * (n_page * kSD) +
+              (n0 + n) * kSD + (f16 - kDD / 16) * 16;
       }
       const uint4 v = *reinterpret_cast<const uint4*>(
           kv + base + side * side_off + off);
@@ -210,26 +215,28 @@ sm70_flashdecode_partition_kernel(
     }
   };
 
-  // Page loop (synchronous staging — cp.async needs sm_80+). This block
+  // Chunk loop (synchronous staging — cp.async needs sm_80+). This block
   // exclusively owns its (sp, qq) ws slots: start them empty, then merge
-  // each page's partial in (online combine), so q_rows rows share one
+  // each chunk's partial in (online combine), so q_rows rows share one
   // pass over the staged KV.
   for (int qq = 0; qq < q_rows; qq++) {
     write_empty_row(qq);
   }
   __syncthreads();
-  for (int b = b0; b < b1; b++) {
-    stage_page(b);
+  for (int c = c0; c <= c1; c++) {
+    const int cbase = c * kN;
+    const int block = cbase / n_page;
+    stage_chunk(block, cbase - block * n_page);
     decode_scales();
 
-    const int t0 = b * kN > lo ? b * kN : lo;
-    const int t1_page = (b + 1) * kN < kv_len ? (b + 1) * kN : kv_len;
+    const int t0 = cbase > (int)t_a ? cbase : (int)t_a;
+    const int t1_page = cbase + kN < (int)t_b ? cbase + kN : (int)t_b;
 
     for (int qq = 0; qq < q_rows; qq++) {
       const int hi = kv_len - q_rows + qq + 1;
       const int t1 = t1_page < hi ? t1_page : hi;
 
-      // Per-row partial state (registers: 12 acc pairs + 12 score accs).
+      // Per-row partial state (registers: kRatio acc pairs + scores).
       float acc_lo[kRatio];
       float acc_hi[kRatio];
 #pragma unroll
@@ -254,7 +261,7 @@ sm70_flashdecode_partition_kernel(
 
         // Phase 1: per-token scores (warp partials, reduced per token).
         for (int t = t0; t < t1; t++) {
-          const int n = t - b * kN;
+          const int n = t - cbase;
           const unsigned char kb = kv_raw[0][n * kF + d_byte];
           const float K_lo =
               __half2float(e2m1_half(kb & 0xF)) * sfk[n * kSD + g_lo];
@@ -334,7 +341,7 @@ sm70_flashdecode_partition_kernel(
         }
         __syncthreads();
         for (int t = t0; t < t1; t++) {
-          const int n = t - b * kN;
+          const int n = t - cbase;
           const int trel = t - t0;
           const unsigned char vb = kv_raw[1][n * kF + d_byte];
           const float V_lo =
@@ -452,11 +459,13 @@ void sm70_flashdecode(torch::stable::Tensor& q, torch::stable::Tensor& kv,
   // dtypes are asserted by the python wrapper; only shapes are checked here.
   STD_TORCH_CHECK(q.size(1) == q_rows && q_rows >= 1 && q_rows <= kMaxQ,
                   "sm70_flashdecode: q dim 1 must equal q_rows (1..8)");
-  STD_TORCH_CHECK(q.size(2) == kHQ && q.size(3) == kD,
+    STD_TORCH_CHECK(q.size(2) == kHQ && q.size(3) == kD,
                   "sm70_flashdecode: supports HQ=12 (TP2), D=256");
   const int64_t H = kv.size(1) / 2;
-  STD_TORCH_CHECK(H == kH && kv.size(2) == kN && kv.size(3) == kF,
-                  "sm70_flashdecode: supports H=2, N=16, F=144");
+  const int64_t n_page = kv.size(2);
+  STD_TORCH_CHECK(
+      H == kH && n_page >= kN && n_page % kN == 0 && kv.size(3) == kF,
+      "sm70_flashdecode: supports H=2, F=144, page = multiple of 16");
   const int64_t R = q.size(0);
   const int64_t bt_cols = block_table.size(1);
   STD_TORCH_CHECK(block_table.size(0) == R && kv_lens.size(0) == R,
@@ -482,8 +491,8 @@ void sm70_flashdecode(torch::stable::Tensor& q, torch::stable::Tensor& kv,
       static_cast<float>(k_scale), static_cast<float>(v_scale),
       static_cast<float>(sm_scale), static_cast<int>(window_left),
       static_cast<int>(splits), static_cast<int>(q_rows),
-      static_cast<int>(bt_cols), kv.stride(0),
-      (int64_t)kH * kN * kF);
+      static_cast<int>(bt_cols), static_cast<int>(n_page), kv.stride(0),
+      (int64_t)H * n_page * kF);
 
   dim3 rgrid(kH, R);
   sm70_flashdecode_reduce_kernel<<<rgrid, kThreads, 0, stream>>>(
