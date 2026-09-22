@@ -132,6 +132,10 @@ _SM70_NATIVE_PREFILL = os.environ.get("VLLM_SM70_NATIVE_PREFILL", "0") == "1"
 #     steps) REGRESSED 44.7->46.1 / 57.1->64.1 / 83.3->95.8 ms/step. SF=4
 #     stands for both kernels; production benches, not shape sweeps, rule.
 _SM70_FD_SPLIT_FACTOR = 4
+# Verify-path split factor (grid is R=1 capture-invariant, see builder):
+# 4 for the per-row kernel (splits=80 optimum), 6 for the merged v4
+# kernel (splits=120, -15% at all ctx).
+_SM70_FD_VERIFY_FACTOR = 6 if envs.VLLM_SM70_FD_HMMA else 4
 
 # SM70 NVFP4: opt-in in-kernel-dequant SPLITD paged prefill. The WMMA
 # tensor-core kernel reads the packed NVFP4 cache directly (1/8 the KV HBM
@@ -3071,11 +3075,15 @@ class FlashInferImpl(AttentionImpl):
             # Verify (q<=8): R=1 split count (the grid is
             # capture-invariant). The kv-len device buffer is allocated
             # by the metadata builder and carried via FIPrefill.
+            # The merged v4 kernel (2..4 q-rows per CTA) halves verify
+            # CTAs, so it wants 1.5x the per-row splits: measured
+            # splits=120 beats the old 80 by 15% at every ctx
+            # (135K: 1.43 vs 1.69 ms/layer-call). 6*SM/(2*H_kv) = 120.
             self._sm70_fd_verify_splits = (
                 torch.cuda.get_device_properties(
                     torch.cuda.current_device()
                 ).multi_processor_count
-                * _SM70_FD_SPLIT_FACTOR
+                * _SM70_FD_VERIFY_FACTOR
                 + 2 * self.num_kv_heads
                 - 1
             ) // (2 * self.num_kv_heads)
