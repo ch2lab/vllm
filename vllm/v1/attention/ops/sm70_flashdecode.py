@@ -34,6 +34,8 @@ Dequant: x_hat = E2M1[nib] * E4M3[sf_byte] * layer_scale.
 import numpy as np
 import torch
 
+from vllm import envs
+
 from vllm.v1.attention.ops.sm70_nvfp4_dequant import (
     _nvfp4_e2m1_decode,
     _nvfp4_e4m3_decode,
@@ -202,7 +204,11 @@ def sm70_flashdecode_op(
         <= workspace.numel()
     ), "flashdecode workspace too small"
     try:
-        op = torch.ops._C.sm70_flashdecode
+        op = (
+            torch.ops._C.sm70_flashdecode_hmma
+            if envs.VLLM_SM70_FD_HMMA
+            else torch.ops._C.sm70_flashdecode
+        )
     except AttributeError:
         raise RuntimeError(
             "sm70_flashdecode kernel not built — "

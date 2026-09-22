@@ -201,6 +201,7 @@ if TYPE_CHECKING:
     VLLM_SM70_GDN_GRAPH_DECODE: bool = False
     VLLM_SM70_GDN_FILTER_SPLIT: bool = False
     VLLM_SM70_DECODE_HOSTOPT: bool = False
+    VLLM_SM70_FD_HMMA: bool = False
     VLLM_SM70_GDN_HOSTOPT: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
@@ -1631,6 +1632,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     #     VLLM_SM70_FLASHDECODE.
     "VLLM_SM70_DECODE_HOSTOPT": lambda: bool(
         int(os.getenv("VLLM_SM70_DECODE_HOSTOPT", "0"))
+        and int(os.getenv("VLLM_SM70_FLASHDECODE", "0"))
+    ),
+    # Route sm70_flashdecode through the cute/HMMA v4 partition kernel
+    # (tensor-core score gemm + LUT dequant) instead of the SIMT v3h one.
+    # Requires VLLM_SM70_FLASHDECODE.
+    "VLLM_SM70_FD_HMMA": lambda: bool(
+        int(os.getenv("VLLM_SM70_FD_HMMA", "0"))
         and int(os.getenv("VLLM_SM70_FLASHDECODE", "0"))
     ),
     # Gates only the GDN all-spec fast path of VLLM_SM70_DECODE_HOSTOPT

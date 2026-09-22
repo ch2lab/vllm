@@ -786,7 +786,8 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
     # SM70 (V100) unified NVFP4 FlashDecoding decode/verify kernel (split-KV,
     # fixed grid, cudagraph-safe).
     set(SM70_FLASHDECODE_SRCS
-       "csrc/libtorch_stable/attention/sm70_flashdecode.cu")
+       "csrc/libtorch_stable/attention/sm70_flashdecode.cu"
+       "csrc/libtorch_stable/attention/sm70_flashdecode_hmma.cu")
     set_gencode_flags_for_srcs(
       SRCS "${SM70_FLASHDECODE_SRCS}"
       CUDA_ARCHS "${SM70_NVFP4_ARCHS}")
@@ -1273,6 +1274,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
     DESTINATION vllm
     LANGUAGE ${VLLM_GPU_LANG}
     SOURCES ${VLLM_STABLE_EXT_SRC}
+    INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR}
     COMPILE_FLAGS ${VLLM_GPU_FLAGS}
     ARCHITECTURES ${VLLM_GPU_ARCHES}
     INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR} ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
