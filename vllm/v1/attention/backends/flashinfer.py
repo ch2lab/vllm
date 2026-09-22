@@ -2060,9 +2060,23 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         # When all attention (both prefill and decode) uses TRTLLM,
         # seq_lens_cpu is not needed since TRTLLM paths use GPU tensors
         # (block_tables, seq_lens) directly.
+        # SM70 hostopt: a pure shadow-decode step consumes only the device
+        # kv-lens buffer (the in-kernel-dequant op reads it D2D); the CPU
+        # readback here would drain the whole queued GPU pipeline once per
+        # draft step of the speculator.
+        sm70_shadow_decode_nosync = (
+            envs.VLLM_SM70_DECODE_HOSTOPT
+            and self.sm70_nvfp4_shadow
+            and num_prefills == 0
+            and num_decodes > 0
+            and not self.use_dcp
+            and not use_cascade
+            and not self.use_trtllm_decode_attention
+        )
         needs_seq_lens_cpu = (
             (self.use_dcp or use_cascade or not all_uses_trtllm)
             and not fd_verify_admit
+            and not sm70_shadow_decode_nosync
         )
         if needs_seq_lens_cpu:
             with gpu_sync_allowed():
@@ -2674,7 +2688,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     ),
                 )
             else:
-                assert seq_lens_cpu is not None
+                assert seq_lens_cpu is not None or sm70_shadow_decode_nosync
                 pure_decode = num_prefills == 0
                 use_cudagraph = (
                     self.enable_cuda_graph
@@ -2703,8 +2717,10 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     # kv-lens re-derivation) that this path never uses.
                     # Decode requests lead the batch (same order as
                     # block_table_tensor[:num_input_tokens] above).
-                    kv_lens_decode_cpu = seq_lens_cpu[:num_input_tokens].to(
-                        torch.int32
+                    kv_lens_decode_cpu = (
+                        None
+                        if seq_lens_cpu is None
+                        else seq_lens_cpu[:num_input_tokens].to(torch.int32)
                     )
                 else:
                     paged_kv_indptr_cpu = self.paged_kv_indptr.cpu[
@@ -2787,19 +2803,37 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                     # graph replays refresh it via the pinned copy, so the
                     # captured launches stay replay-invariant.
                     assert num_input_tokens == num_decodes
-                    kv_lens_decode_cpu = kv_lens_decode_cpu.to(torch.int32)
                     if use_cudagraph:
-                        self._sm70_kvlens_pinned[:num_input_tokens].copy_(
-                            kv_lens_decode_cpu
-                        )
-                        self._sm70_kvlens_dev[:num_input_tokens].copy_(
-                            self._sm70_kvlens_pinned[:num_input_tokens],
-                            non_blocking=True,
-                        )
+                        if kv_lens_decode_cpu is None:
+                            # hostopt: stream-ordered D2D into the static
+                            # capture buffer - same value the kernels read,
+                            # no CPU round trip, no pipeline drain.
+                            self._sm70_kvlens_dev[:num_input_tokens].copy_(
+                                common_attn_metadata.seq_lens[
+                                    :num_input_tokens
+                                ]
+                            )
+                        else:
+                            kv_lens_decode_cpu = kv_lens_decode_cpu.to(
+                                torch.int32
+                            )
+                            self._sm70_kvlens_pinned[:num_input_tokens].copy_(
+                                kv_lens_decode_cpu
+                            )
+                            self._sm70_kvlens_dev[:num_input_tokens].copy_(
+                                self._sm70_kvlens_pinned[:num_input_tokens],
+                                non_blocking=True,
+                            )
                         kvlens_dev = self._sm70_kvlens_dev[:num_input_tokens]
                     else:
-                        kvlens_dev = kv_lens_decode_cpu.to(
-                            self.device, non_blocking=True
+                        kvlens_dev = (
+                            common_attn_metadata.seq_lens[
+                                :num_input_tokens
+                            ].to(torch.int32)
+                            if kv_lens_decode_cpu is None
+                            else kv_lens_decode_cpu.to(
+                                self.device, non_blocking=True
+                            )
                         )
                     # Fill the SMs: the split kernel's grid is
                     # (num_reqs, num_kv_heads, splits).
