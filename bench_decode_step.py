@@ -73,7 +73,11 @@ def stream_chat(body):
 stream_chat("hi")
 print("warmup done", flush=True)
 print(f"{'ctx':>8} {'gen':>5} {'pref_s':>8} {'tps':>7} {'tok/step':>8} {'acc':>6} {'ms/step':>8}", flush=True)  # tps=true tokens/s (usage-based)
-for i, C in enumerate([8192, 16384, 32768, 65536, 131072]):
+# body_for_tok(C) builds C*4 tokens; re-tokenization inflates ~3.2%
+# (32768*4 -> measured 135316 ctx). Top target 63000 -> ~260.2K real
+# prompt, fits max_model_len=262144 with GEN headroom. Old 65536/131072
+# targets (262144/524288) were always over-context dead items.
+for i, C in enumerate([8192, 16384, 32768, 63000]):
     body = body_for_tok(C, seed=7000 + i * 131)
     m0 = get("spec_decode")
     t0 = time.time()
