@@ -127,6 +127,10 @@ _SM70_NATIVE_PREFILL = os.environ.get("VLLM_SM70_NATIVE_PREFILL", "0") == "1"
 #     row-shared build passed the full offline matrix (131K q4, n_page
 #     2848, perm BT) but produced degenerate output ONLY in the live TP2
 #     service (see memory 10349); bisect vs the 11:42-working tree pending.
+#   v4 HMMA kernel (2026-09-22): offline fixed-splits sweep said 3/SM beat
+#     4/SM by 10-12%, but the live MTP3 A/B (mixed q1-decode + q4-verify
+#     steps) REGRESSED 44.7->46.1 / 57.1->64.1 / 83.3->95.8 ms/step. SF=4
+#     stands for both kernels; production benches, not shape sweeps, rule.
 _SM70_FD_SPLIT_FACTOR = 4
 
 # SM70 NVFP4: opt-in in-kernel-dequant SPLITD paged prefill. The WMMA
