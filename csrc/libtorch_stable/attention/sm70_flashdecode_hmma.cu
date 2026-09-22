@@ -76,8 +76,11 @@ __device__ __forceinline__ float e4m3_to_float(unsigned char b) {
   return sgn ? -v : v;
 }
 
-template <bool MERGED>
-__global__ void __launch_bounds__(kPartMaxThreads, MERGED ? 3 : 4)
+// MODE: 1 = per-row CTA (q_rows=1 or >8); 2 = merged q_rows 2..4 (3 CTAs/SM);
+// 3 = merged q_rows 5..8 (48 M-rows: 24KB q_smem -> 2 CTAs/SM).
+template <int MODE>
+__global__ void __launch_bounds__(
+    kPartMaxThreads, MODE == 3 ? 2 : (MODE == 2 ? 3 : 4))
 sm70_fd_hmma_partition_kernel_impl(
     const __half* __restrict__ q,
     const uint8_t* __restrict__ kv,
@@ -87,6 +90,7 @@ sm70_fd_hmma_partition_kernel_impl(
     float k_scale, float v_scale, float sm_scale,
     int window_left, int splits, int q_rows, int bt_cols, int n_page,
     int64_t page_stride, int64_t side_off) {
+  constexpr bool MERGED = (MODE >= 2);
   const int zrows = MERGED ? 1 : q_rows;
   const int r = blockIdx.z / zrows;
   const int qq0 = MERGED ? 0 : blockIdx.z % q_rows;
@@ -99,14 +103,15 @@ sm70_fd_hmma_partition_kernel_impl(
 
   // M-rows are (qq, head) pairs flattened as i = qq*kRatio + head; one
   // gemm tile per 8 rows. !MERGED: i == head (rows 6..7 zero pad).
-  constexpr int kSmemRows = MERGED ? kMtiles * 8 : 8;
+  constexpr int kSmemRows =
+      MODE == 1 ? 8 : (MODE == 2 ? kMtiles * 8 : 6 * 8);
   __shared__ __half q_smem[kSmemRows * kD];     // 12 KB merged, 4 KB plain
   __shared__ uint8_t kv_raw[kN * kF];           // 2.3 KB V packed
   __shared__ __half k_tile_storage_full[kN * kD];   // 8 KB (gemm operand)
   // Score slabs: MERGED = one fully-accumulated slab per M tile (tiles
   // 0..2); !MERGED = one partial per dim chunk for the single tile
   // (softmax sums the 4). Same [kDChunks][8][kN] bytes serve both.
-  __shared__ float s_sc[kDChunks][8][kN];
+  __shared__ float s_sc[MODE == 3 ? 6 : kDChunks][8][kN];
   // v3h-style dequant tables: e2t[byte] = the 2 nibble magnitudes,
   // e4t[side*256+byte] = e4m3 value x layer scale (exact in fp32).
   __shared__ float2 e2t[256];
@@ -141,7 +146,7 @@ sm70_fd_hmma_partition_kernel_impl(
   if (t_a >= t_b) return;
   const int c0 = (int)(t_a / kN);
   const int c1 = (int)((t_b - 1) / kN);
-  constexpr int KNR = MERGED ? kMergedMaxQ : 1;
+  constexpr int KNR = MERGED ? (MODE == 2 ? kMergedMaxQ : kMaxQ) : 1;
   int hi_row[KNR];
 #pragma unroll
   for (int qi = 0; qi < KNR; qi++) {
@@ -243,7 +248,7 @@ sm70_fd_hmma_partition_kernel_impl(
     if constexpr (MERGED) {
       // warp g < kMtiles: M tile g over all dim chunks (accumulated in
       // registers, one full slab published).
-      if (warp < kMtiles) {
+      if (warp < (nrows * kRatio + 7) / 8) {
         auto accT = thr_mma.partition_C(make_tensor(
             make_gmem_ptr(&s_sc[warp][0][0]),
             make_shape(_8{}, Int<kN>{}), make_stride(Int<kN>{}, _1{})));
@@ -528,8 +533,10 @@ void sm70_flashdecode_hmma(torch::stable::Tensor& q, torch::stable::Tensor& kv,
 
   cudaStream_t stream = get_current_cuda_stream(q.get_device_index());
 
-  const bool merged = q_rows >= 2 && q_rows <= kMergedMaxQ;
-  dim3 grid(splits, kH, R * (merged ? 1 : q_rows));
+  const int mode = (q_rows >= 2 && q_rows <= kMergedMaxQ)
+      ? 2
+      : (q_rows >= 5 && q_rows <= kMaxQ ? 3 : 1);
+  dim3 grid(splits, kH, R * (mode >= 2 ? 1 : q_rows));
   dim3 block(kRatio * 32);
 #define FD_ARGS \
       reinterpret_cast<const __half*>(q.data_ptr()), \
@@ -542,11 +549,14 @@ void sm70_flashdecode_hmma(torch::stable::Tensor& q, torch::stable::Tensor& kv,
       static_cast<int>(splits), static_cast<int>(q_rows), \
       static_cast<int>(bt_cols), static_cast<int>(n_page), kv.stride(0), \
       (int64_t)H * n_page * kF
-  if (merged) {
-    sm70_fd_hmma_partition_kernel_impl<true><<<grid, block, 0, stream>>>(
+  if (mode == 2) {
+    sm70_fd_hmma_partition_kernel_impl<2><<<grid, block, 0, stream>>>(
+        FD_ARGS);
+  } else if (mode == 3) {
+    sm70_fd_hmma_partition_kernel_impl<3><<<grid, block, 0, stream>>>(
         FD_ARGS);
   } else {
-    sm70_fd_hmma_partition_kernel_impl<false><<<grid, block, 0, stream>>>(
+    sm70_fd_hmma_partition_kernel_impl<1><<<grid, block, 0, stream>>>(
         FD_ARGS);
   }
 #undef FD_ARGS
