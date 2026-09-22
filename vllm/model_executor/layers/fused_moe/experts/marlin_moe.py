@@ -56,6 +56,20 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
 
+_SM70_NVFP4_MOE: bool | None = None
+
+
+def _sm70_nvfp4_moe() -> bool:
+    """True on exact SM70, where NVFP4 MoE runs via the SM70 Marlin kernel:
+    fp16 accumulation (no fp32 reduce) and fp16 activations are required."""
+    global _SM70_NVFP4_MOE
+    if _SM70_NVFP4_MOE is None:
+        cap = current_platform.get_device_capability()
+        _SM70_NVFP4_MOE = (
+            current_platform.is_cuda() and cap is not None and cap == (7, 0)
+        )
+    return _SM70_NVFP4_MOE
+
 
 def _fused_marlin_moe(
     hidden_states: torch.Tensor,
@@ -93,6 +107,10 @@ def _fused_marlin_moe(
     assert hidden_states.ndim == 2
     M, K = hidden_states.size()
     N = marlin_moe_intermediate_size(w1, w2)
+    if _sm70_nvfp4_moe() and quant_type == scalar_types.float4_e2m1f:
+        assert hidden_states.dtype == torch.float16, (
+            "SM70 Marlin MoE NVFP4 kernel requires fp16 activations"
+        )
     w13_num_shards = 2 if activation.is_gated else 1
     if workspace is None:
         workspace = marlin_make_workspace_new(hidden_states.device, 4)
@@ -150,7 +168,9 @@ def _fused_marlin_moe(
         size_n=w13_num_shards * N,
         size_k=K,
         use_atomic_add=False,
-        use_fp32_reduce=True,
+        use_fp32_reduce=not (
+            _sm70_nvfp4_moe() and quant_type == scalar_types.float4_e2m1f
+        ),
         is_zp_float=False,
     )
     activation_input = intermediate_cache1.view(-1, w13_num_shards * N)
@@ -214,7 +234,9 @@ def _fused_marlin_moe(
         size_n=K,
         size_k=N,
         use_atomic_add=False,
-        use_fp32_reduce=True,
+        use_fp32_reduce=not (
+            _sm70_nvfp4_moe() and quant_type == scalar_types.float4_e2m1f
+        ),
         is_zp_float=False,
     )
 
@@ -558,7 +580,14 @@ class MarlinExpertsBase(mk.FusedMoEExpertsModular):
     @staticmethod
     def _supports_current_device() -> bool:
         p = current_platform
-        return p.is_cuda() and p.has_device_capability((7, 5))
+        if not p.is_cuda():
+            return False
+        cap = p.get_device_capability()
+        if cap == (7, 0):
+            # Exact SM70 (V100/Volta): NVFP4 MoE runs on the SM70 Marlin
+            # kernel (sm70_marlin_*): fp16 in/out, fp16 accumulation.
+            return True
+        return p.has_device_capability((7, 5))
 
     @staticmethod
     def _supports_no_act_and_mul() -> bool:

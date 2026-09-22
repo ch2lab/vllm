@@ -14,22 +14,53 @@
 
 namespace {
 
+// SM70 (V100) has no cp.async; do a plain synchronous 16-byte copy. On CC 8.0+
+// the compiler may still use a plain copy here — the surrounding
+// __syncthreads() provides the ordering, so this is correct on both.
 template <typename StateT>
 __device__ __forceinline__ void cp_async_16b(StateT* smem_ptr,
                                              const StateT* gmem_ptr) {
-  const uint32_t smem_addr =
-      static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n"
-               :
-               : "r"(smem_addr), "l"(gmem_ptr));
+  constexpr int kElementsPerCopy = 16 / sizeof(StateT);
+  const StateT* src = gmem_ptr;
+  StateT* dst = smem_ptr;
+#pragma unroll
+  for (int i = 0; i < kElementsPerCopy; ++i) {
+    dst[i] = src[i];
+  }
 }
 
-__device__ __forceinline__ void cp_async_commit() {
-  asm volatile("cp.async.commit_group;\n" ::);
+__device__ __forceinline__ void cp_async_commit() {}
+
+// The copies are now synchronous, so there is nothing to wait for; the
+// __syncthreads() that follows every call site provides cross-thread
+// visibility.
+__device__ __forceinline__ void cp_async_wait_all() {}
+
+// Activation (q/k/v/a/b/output_gate/out) element conversions. The kernel
+// computes in fp32; only the storage type of these tensors varies (bf16 on a
+// bf16 model, fp16 on an fp16 model such as our SM70/NVFP4 build).
+template <typename ActT>
+__device__ __forceinline__ float act_to_float(const ActT* p);
+template <>
+__device__ __forceinline__ float
+act_to_float<__nv_bfloat16>(const __nv_bfloat16* p) {
+  return __bfloat162float(*p);
+}
+template <>
+__device__ __forceinline__ float act_to_float<__half>(const __half* p) {
+  return __half2float(*p);
 }
 
-__device__ __forceinline__ void cp_async_wait_all() {
-  asm volatile("cp.async.wait_all;\n" ::: "memory");
+template <typename ActT>
+__device__ __forceinline__ ActT float_to_act(float v);
+template <>
+__device__ __forceinline__ __nv_bfloat16
+float_to_act<__nv_bfloat16>(float v) {
+  return __float2bfloat16(v);
+}
+template <>
+__device__ __forceinline__ __half float_to_act<__half>(float v) {
+  return __float2half(v);
 }
 
 template <typename StateT, int ChunkV, int DimK, int Stages>
@@ -147,17 +178,17 @@ __device__ __forceinline__ Sum2 warp_reduce_sum_pair(float x, float y) {
   return {x, y};
 }
 
-template <typename StateT, int ValueHeadsPerKeyHead, bool SigmoidGate>
+template <typename StateT, typename ActT, int ValueHeadsPerKeyHead,
+          bool SigmoidGate>
 __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
-    const __nv_bfloat16* __restrict__ mixed_qkv,
-    const __nv_bfloat16* __restrict__ a, const __nv_bfloat16* __restrict__ b,
-    const float* __restrict__ a_log, const void* __restrict__ dt_bias,
-    const int* __restrict__ state_indices, const int* __restrict__ cu_seqlens,
+    const ActT* __restrict__ mixed_qkv, const ActT* __restrict__ a,
+    const ActT* __restrict__ b, const float* __restrict__ a_log,
+    const void* __restrict__ dt_bias, const int* __restrict__ state_indices,
+    const int* __restrict__ cu_seqlens,
     const int* __restrict__ num_accepted_tokens, StateT* __restrict__ state,
-    const __nv_bfloat16* __restrict__ output_gate,
-    const void* __restrict__ norm_weight, __nv_bfloat16* __restrict__ out,
-    int H, int HV, int state_indices_width, int dt_bias_type,
-    bool norm_weight_is_bf16, float scale, float norm_eps,
+    const ActT* __restrict__ output_gate, const void* __restrict__ norm_weight,
+    ActT* __restrict__ out, int H, int HV, int state_indices_width,
+    int dt_bias_type, bool norm_weight_is_bf16, float scale, float norm_eps,
     GdnDecodeStrides strides) {
   const int request = blockIdx.x;
   const int value_head = blockIdx.y;
@@ -182,7 +213,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
       const int value = linear % kDimV;
       const int64_t out_offset =
           (static_cast<int64_t>(token) * HV + value_head) * kDimV + value;
-      out[out_offset] = __float2bfloat16(0.0f);
+      out[out_offset] = float_to_act<ActT>(0.0f);
     }
     return;
   }
@@ -191,8 +222,8 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
   __shared__ StateT shared_state[2][kChunkV][kDimK];
   __shared__ float shared_q[kMaxMtpTokens][kDimK];
   __shared__ float shared_k[kMaxMtpTokens][kDimK];
-  __shared__ __nv_bfloat16 shared_v[kMaxMtpTokens][kDimV];
-  __shared__ __nv_bfloat16 shared_out[kMaxMtpTokens][kDimV];
+  __shared__ ActT shared_v[kMaxMtpTokens][kDimV];
+  __shared__ ActT shared_out[kMaxMtpTokens][kDimV];
   __shared__ float shared_decay[kMaxMtpTokens];
   __shared__ float shared_beta[kMaxMtpTokens];
 
@@ -213,10 +244,10 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
       const int dim = lane + i * 32;
-      q_values[i] =
-          __bfloat162float(mixed_qkv[mixed_base + key_head * kDimK + dim]);
-      k_values[i] = __bfloat162float(
-          mixed_qkv[mixed_base + H * kDimK + key_head * kDimK + dim]);
+      q_values[i] = act_to_float<ActT>(
+          mixed_qkv + mixed_base + key_head * kDimK + dim);
+      k_values[i] = act_to_float<ActT>(
+          mixed_qkv + mixed_base + H * kDimK + key_head * kDimK + dim);
       shared_v[t][dim] =
           mixed_qkv[mixed_base + 2 * H * kDimK + value_head * kDimV + dim];
       q_square += q_values[i] * q_values[i];
@@ -234,10 +265,10 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
       shared_k[t][dim] = k_values[i] * k_scale;
     }
     if (lane == 0) {
-      const float a_value = __bfloat162float(
-          a[static_cast<int64_t>(token) * strides.a_row + value_head]);
-      const float b_value = __bfloat162float(
-          b[static_cast<int64_t>(token) * strides.b_row + value_head]);
+      const float a_value = act_to_float<ActT>(
+          a + static_cast<int64_t>(token) * strides.a_row + value_head);
+      const float b_value = act_to_float<ActT>(
+          b + static_cast<int64_t>(token) * strides.b_row + value_head);
       const float g = -__expf(a_log[value_head]) *
                       softplus_fast(a_value + load_dt_bias(dt_bias, value_head,
                                                            dt_bias_type));
@@ -299,7 +330,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
       for (int row = 0; row < kRowsPerWarp; ++row) {
         const int value = chunk * kChunkV + rows[row];
         const float delta =
-            (__bfloat162float(shared_v[t][value]) - reduced_hk[row]) *
+            (act_to_float<ActT>(shared_v[t] + value) - reduced_hk[row]) *
             shared_beta[t];
 #pragma unroll
         for (int i = 0; i < 4; ++i) {
@@ -311,13 +342,13 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
       const Sum2 dot_hq_23 = warp_reduce_sum_pair(dot_hq[2], dot_hq[3]);
       if (lane == 0) {
         shared_out[t][chunk * kChunkV + rows[0]] =
-            __float2bfloat16(dot_hq_01.x);
+            float_to_act<ActT>(dot_hq_01.x);
         shared_out[t][chunk * kChunkV + rows[1]] =
-            __float2bfloat16(dot_hq_01.y);
+            float_to_act<ActT>(dot_hq_01.y);
         shared_out[t][chunk * kChunkV + rows[2]] =
-            __float2bfloat16(dot_hq_23.x);
+            float_to_act<ActT>(dot_hq_23.x);
         shared_out[t][chunk * kChunkV + rows[3]] =
-            __float2bfloat16(dot_hq_23.y);
+            float_to_act<ActT>(dot_hq_23.y);
       }
 
       const int destination_slot =
@@ -345,7 +376,7 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
       const int value = lane + i * 32;
-      output_values[i] = __bfloat162float(shared_out[t][value]);
+      output_values[i] = act_to_float<ActT>(shared_out[t] + value);
       sum_square += output_values[i] * output_values[i];
     }
     sum_square = warp_reduce_sum(sum_square);
@@ -355,9 +386,9 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
       const int value = lane + i * 32;
-      const float gate_input = __bfloat162float(
-          output_gate[static_cast<int64_t>(token) * strides.gate_row +
-                      value_head * kDimV + value]);
+      const float gate_input = act_to_float<ActT>(output_gate +
+          static_cast<int64_t>(token) * strides.gate_row +
+          value_head * kDimV + value);
       const float gate =
           SigmoidGate ? sigmoid_fast(gate_input) : silu_fast(gate_input);
       const float weight =
@@ -368,12 +399,13 @@ __global__ __launch_bounds__(kThreads, 2) void gdn_decode_post_conv_mtp_kernel(
       const int64_t out_offset =
           (static_cast<int64_t>(token) * HV + value_head) * kDimV + value;
       out[out_offset] =
-          __float2bfloat16(output_values[i] * rstd * weight * gate);
+          float_to_act<ActT>(output_values[i] * rstd * weight * gate);
     }
   }
 }
 
-template <typename StateT, int ValueHeadsPerKeyHead, bool SigmoidGate>
+template <typename StateT, typename ActT, int ValueHeadsPerKeyHead,
+          bool SigmoidGate>
 void launch_gdn_decode_post_conv_mtp(
     torch::stable::Tensor const& mixed_qkv, torch::stable::Tensor const& a_log,
     torch::stable::Tensor const& dt_bias,
@@ -381,8 +413,8 @@ void launch_gdn_decode_post_conv_mtp(
     torch::stable::Tensor const& cu_seqlens,
     torch::stable::Tensor const& num_accepted_tokens,
     torch::stable::Tensor& state, torch::stable::Tensor const& norm_weight,
-    torch::stable::Tensor& out, const __nv_bfloat16* a, const __nv_bfloat16* b,
-    const __nv_bfloat16* output_gate, int num_key_heads, int num_value_heads,
+    torch::stable::Tensor& out, const void* a, const void* b,
+    const void* output_gate, int num_key_heads, int num_value_heads,
     double scale, double norm_eps, GdnDecodeStrides strides) {
   using torch::headeronly::ScalarType;
 
@@ -398,16 +430,18 @@ void launch_gdn_decode_post_conv_mtp(
       get_current_cuda_stream(mixed_qkv.get_device_index());
   const int num_requests = static_cast<int>(state_indices.size(0));
   const dim3 grid(num_requests, num_value_heads);
-  gdn_decode_post_conv_mtp_kernel<StateT, ValueHeadsPerKeyHead, SigmoidGate>
+  gdn_decode_post_conv_mtp_kernel<StateT, ActT, ValueHeadsPerKeyHead,
+                                  SigmoidGate>
       <<<grid, kThreads, 0, stream>>>(
-          static_cast<const __nv_bfloat16*>(mixed_qkv.data_ptr()), a, b,
+          static_cast<const ActT*>(mixed_qkv.data_ptr()),
+          static_cast<const ActT*>(a), static_cast<const ActT*>(b),
           static_cast<const float*>(a_log.data_ptr()), dt_bias.data_ptr(),
           static_cast<const int*>(state_indices.data_ptr()),
           static_cast<const int*>(cu_seqlens.data_ptr()),
           static_cast<const int*>(num_accepted_tokens.data_ptr()),
-          static_cast<StateT*>(state.data_ptr()), output_gate,
-          norm_weight.data_ptr(), static_cast<__nv_bfloat16*>(out.data_ptr()),
-          num_key_heads, num_value_heads,
+          static_cast<StateT*>(state.data_ptr()),
+          static_cast<const ActT*>(output_gate), norm_weight.data_ptr(),
+          static_cast<ActT*>(out.data_ptr()), num_key_heads, num_value_heads,
           static_cast<int>(state_indices.size(1)), dt_bias_type,
           norm_weight.scalar_type() == ScalarType::BFloat16,
           static_cast<float>(scale), static_cast<float>(norm_eps), strides);
@@ -431,13 +465,15 @@ void fused_gdn_decode_post_conv_mtp(
     double scale, double norm_eps, const std::string& output_gate_activation) {
   using torch::headeronly::ScalarType;
 
+  const auto act_type = mixed_qkv.scalar_type();
   STD_TORCH_CHECK(
-      mixed_qkv.is_cuda() && mixed_qkv.scalar_type() == ScalarType::BFloat16,
-      "mixed_qkv must be a CUDA bfloat16 tensor");
-  STD_TORCH_CHECK(a.is_cuda() && a.scalar_type() == ScalarType::BFloat16,
-                  "a must be a CUDA bfloat16 tensor");
-  STD_TORCH_CHECK(b.is_cuda() && b.scalar_type() == ScalarType::BFloat16,
-                  "b must be a CUDA bfloat16 tensor");
+      mixed_qkv.is_cuda() &&
+          (act_type == ScalarType::BFloat16 || act_type == ScalarType::Half),
+      "mixed_qkv must be a CUDA bfloat16 or float16 tensor");
+  STD_TORCH_CHECK(a.is_cuda() && a.scalar_type() == act_type,
+                  "a must match the mixed_qkv dtype (bfloat16 or float16)");
+  STD_TORCH_CHECK(b.is_cuda() && b.scalar_type() == act_type,
+                  "b must match the mixed_qkv dtype (bfloat16 or float16)");
   STD_TORCH_CHECK(a_log.is_cuda() && a_log.scalar_type() == ScalarType::Float,
                   "A_log must be a CUDA float32 tensor");
   const auto dt_bias_scalar_type = dt_bias.scalar_type();
@@ -461,14 +497,14 @@ void fused_gdn_decode_post_conv_mtp(
                           state_scalar_type == ScalarType::BFloat16),
       "state must be a CUDA float32 or bfloat16 tensor");
   STD_TORCH_CHECK(output_gate.is_cuda() &&
-                      output_gate.scalar_type() == ScalarType::BFloat16,
-                  "output_gate must be a CUDA bfloat16 tensor");
+                      output_gate.scalar_type() == act_type,
+                  "output_gate must match the mixed_qkv dtype");
   STD_TORCH_CHECK(norm_weight.is_cuda() &&
                       (norm_weight.scalar_type() == ScalarType::Float ||
                        norm_weight.scalar_type() == ScalarType::BFloat16),
                   "norm_weight must be a CUDA float32 or bfloat16 tensor");
-  STD_TORCH_CHECK(out.is_cuda() && out.scalar_type() == ScalarType::BFloat16,
-                  "out must be a CUDA bfloat16 tensor");
+  STD_TORCH_CHECK(out.is_cuda() && out.scalar_type() == act_type,
+                  "out must match the mixed_qkv dtype");
   STD_TORCH_CHECK(
       output_gate_activation == "silu" || output_gate_activation == "sigmoid",
       "output_gate_activation must be 'silu' or 'sigmoid'");
@@ -549,49 +585,59 @@ void fused_gdn_decode_post_conv_mtp(
 
   const GdnDecodeStrides strides{mixed_qkv.stride(0), a.stride(0), b.stride(0),
                                  output_gate.stride(0), state.stride(0)};
-  const auto* a_ptr = static_cast<const __nv_bfloat16*>(a.data_ptr());
-  const auto* b_ptr = static_cast<const __nv_bfloat16*>(b.data_ptr());
-  const auto* output_gate_ptr =
-      static_cast<const __nv_bfloat16*>(output_gate.data_ptr());
-  const auto launch = [&]<typename StateT, int ValueHeadsPerKeyHead,
-                          bool SigmoidGate>() {
-    launch_gdn_decode_post_conv_mtp<StateT, ValueHeadsPerKeyHead, SigmoidGate>(
-        mixed_qkv, a_log, dt_bias, state_indices, cu_seqlens,
-        num_accepted_tokens, state, norm_weight, out, a_ptr, b_ptr,
-        output_gate_ptr, num_key_heads, num_value_heads, scale, norm_eps,
-        strides);
-  };
-  const auto dispatch_state_type = [&]<int ValueHeadsPerKeyHead>() {
-    if (state_scalar_type == ScalarType::Float) {
-      if (output_gate_activation == "sigmoid") {
-        launch.template operator()<float, ValueHeadsPerKeyHead, true>();
-      } else {
-        launch.template operator()<float, ValueHeadsPerKeyHead, false>();
-      }
-    } else {
-      if (output_gate_activation == "sigmoid") {
-        launch.template operator()<__nv_bfloat16, ValueHeadsPerKeyHead, true>();
-      } else {
-        launch
-            .template operator()<__nv_bfloat16, ValueHeadsPerKeyHead, false>();
-      }
+  const void* a_ptr = a.data_ptr();
+  const void* b_ptr = b.data_ptr();
+  const void* output_gate_ptr = output_gate.data_ptr();
+  const auto launch =
+      [&]<typename StateT, typename ActT, int ValueHeadsPerKeyHead,
+          bool SigmoidGate>() {
+        launch_gdn_decode_post_conv_mtp<StateT, ActT, ValueHeadsPerKeyHead,
+                                        SigmoidGate>(
+            mixed_qkv, a_log, dt_bias, state_indices, cu_seqlens,
+            num_accepted_tokens, state, norm_weight, out, a_ptr, b_ptr,
+            output_gate_ptr, num_key_heads, num_value_heads, scale, norm_eps,
+            strides);
+      };
+  const auto dispatch_act_state =
+      [&]<typename StateT, typename ActT, int ValueHeadsPerKeyHead>() {
+        if (output_gate_activation == "sigmoid") {
+          launch.template operator()<StateT, ActT, ValueHeadsPerKeyHead, true>();
+        } else {
+          launch.template operator()<StateT, ActT, ValueHeadsPerKeyHead, false>();
+        }
+      };
+  const auto dispatch_heads = [&]<typename StateT, typename ActT>() {
+    switch (value_heads_per_key_head) {
+      case 1:
+        dispatch_act_state.template operator()<StateT, ActT, 1>();
+        break;
+      case 2:
+        dispatch_act_state.template operator()<StateT, ActT, 2>();
+        break;
+      case 3:
+        dispatch_act_state.template operator()<StateT, ActT, 3>();
+        break;
+      case 4:
+        dispatch_act_state.template operator()<StateT, ActT, 4>();
+        break;
+      default:
+        dispatch_act_state.template operator()<StateT, ActT, 8>();
+        break;
     }
   };
-  switch (value_heads_per_key_head) {
-    case 1:
-      dispatch_state_type.template operator()<1>();
-      break;
-    case 2:
-      dispatch_state_type.template operator()<2>();
-      break;
-    case 3:
-      dispatch_state_type.template operator()<3>();
-      break;
-    case 4:
-      dispatch_state_type.template operator()<4>();
-      break;
-    default:
-      dispatch_state_type.template operator()<8>();
-      break;
+  const bool state_is_float = state_scalar_type == ScalarType::Float;
+  const bool act_is_bf16 = act_type == ScalarType::BFloat16;
+  if (state_is_float) {
+    if (act_is_bf16) {
+      dispatch_heads.template operator()<float, __nv_bfloat16>();
+    } else {
+      dispatch_heads.template operator()<float, __half>();
+    }
+  } else {
+    if (act_is_bf16) {
+      dispatch_heads.template operator()<__nv_bfloat16, __nv_bfloat16>();
+    } else {
+      dispatch_heads.template operator()<__nv_bfloat16, __half>();
+    }
   }
 }

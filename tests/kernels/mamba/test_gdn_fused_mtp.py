@@ -13,9 +13,9 @@ import torch
 
 from vllm.platforms import current_platform
 
-if not (current_platform.is_cuda() and current_platform.has_device_capability(80)):
+if not (current_platform.is_cuda() and current_platform.has_device_capability(70)):
     pytest.skip(
-        reason="Fused GDN MTP decode requires CUDA compute capability 8.0+.",
+        reason="Fused GDN MTP decode requires CUDA compute capability 7.0+.",
         allow_module_level=True,
     )
 

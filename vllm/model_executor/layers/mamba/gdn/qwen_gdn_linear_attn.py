@@ -90,6 +90,13 @@ logger = init_logger(__name__)
 MAX_FUSED_GDN_MTP_TOKENS = 8
 FUSED_GDN_STATE_DTYPES = (torch.float32, torch.bfloat16)
 
+# One-shot feature markers. Whether the fused-MTP-decode path is engaged is a
+# per-process (per-TP-worker) global property, so each of these logs exactly
+# once per process instead of once per GDN layer (dozens of layers => dozens
+# of identical startup lines).
+_GDN_MTP_ACTIVE_LOGGED = False
+_GDN_MTP_FALLBACK_LOGGED = False
+
 
 def _resolve_gdn_prefill_backend(
     vllm_config: VllmConfig,
@@ -134,10 +141,10 @@ def _resolve_gdn_prefill_backend(
     import os
     cap = current_platform.get_device_capability()
     if cap is not None and cap.major == 7 and cap.minor in (0, 5):
-        # SM70/SM75 (V100): custom CUDA GDN kernel (optional, for perf).
-        # Disabled by default — use FLA Triton (same logic as SM120).
-        # Set VLLM_SM70_GDN_CUDA=1 to enable the custom SM70 kernel.
-        if head_k_dim == 128 and os.environ.get("VLLM_SM70_GDN_CUDA", "0") == "1":
+        # SM70/SM75 (V100): custom CUDA GDN kernel. Enabled by default on
+        # SM70/SM75 (the FLA Triton path has fp16 precision issues on SM70);
+        # set VLLM_SM70_GDN_CUDA=0 to fall back to FLA Triton.
+        if head_k_dim == 128 and os.environ.get("VLLM_SM70_GDN_CUDA", "1") == "1":
             supports_sm70_cuda = True
     elif current_platform.is_device_capability(90):
         supports_flashinfer = True
@@ -598,21 +605,22 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         self, vllm_config: VllmConfig
     ) -> str | None:
         conv_state_dtype, recurrent_state_dtype = self.get_state_dtype()
+        act_ok = (torch.bfloat16, torch.float16)
         if (
             self.gqa_interleaved_layout
             or self.head_k_dim != 128
             or self.head_v_dim != 128
             or self.norm.activation not in ("silu", "sigmoid")
-            or vllm_config.model_config.dtype != torch.bfloat16
-            or conv_state_dtype != torch.bfloat16
+            or vllm_config.model_config.dtype not in act_ok
+            or conv_state_dtype not in act_ok
             or recurrent_state_dtype not in FUSED_GDN_STATE_DTYPES
-            or not current_platform.has_device_capability(80)
+            or not current_platform.has_device_capability(70)
         ):
             return (
-                "the fused CUDA kernel requires a BF16 GDN model with "
+                "the fused CUDA kernel requires a BF16/FP16 GDN model with "
                 "K=V=128, SiLU or sigmoid gating, non-interleaved GQA "
-                "layout, BF16 convolution cache, BF16 or FP32 recurrent "
-                "state, and a GPU with compute capability 8.0+"
+                "layout, BF16/FP16 convolution cache, BF16 or FP32 recurrent "
+                "state, and a GPU with compute capability 7.0+"
             )
         if not hasattr(torch.ops._C, "fused_gdn_decode_post_conv_mtp"):
             return "torch.ops._C.fused_gdn_decode_post_conv_mtp is not built"
@@ -976,8 +984,9 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
 
         use_fused_gdn_decode = (
             self.enable_fused_gdn_decode
-            and hidden_states.dtype == torch.bfloat16
-            and self.norm.weight.dtype in (torch.bfloat16, torch.float32)
+            and hidden_states.dtype in (torch.bfloat16, torch.float16)
+            and self.norm.weight.dtype
+            in (torch.bfloat16, torch.float32, torch.float16)
         )
         if use_fused_gdn_decode:
             core_attn_out = torch.zeros(
@@ -1817,6 +1826,15 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             attn_metadata=attn_metadata,
         )
 
+    def _fused_f32_param(self, param: torch.Tensor, attr: str) -> torch.Tensor:
+        """Cached fp32 copy of a static param. The fused GDN kernel requires
+        A_log in fp32 and norm_weight in fp32/bf16; model params may be fp16."""
+        cached = getattr(self, attr, None)
+        if cached is None or cached.dtype is not torch.float32:
+            cached = param.to(torch.float32)
+            setattr(self, attr, cached)
+        return cached
+
     def _forward_core_decode_spec_post_conv_fused_norm(
         self,
         mixed_qkv: torch.Tensor,
@@ -1834,18 +1852,27 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         assert num_accepted_tokens is not None
 
         num_requests = attn_metadata.num_spec_decodes
+        global _GDN_MTP_ACTIVE_LOGGED
+        if not _GDN_MTP_ACTIVE_LOGGED:
+            _GDN_MTP_ACTIVE_LOGGED = True
+            logger.info(
+                "GDN fused MTP decode ACTIVE layer=%s L=%d requests=%d "
+                "state_dtype=%s act_dtype=%s",
+                self.prefix, mixed_qkv.size(0), num_requests,
+                self.kv_cache[1].dtype, mixed_qkv.dtype)
         ops.fused_gdn_decode_post_conv_mtp(
             mixed_qkv=mixed_qkv,
             a=a,
             b=b,
-            A_log=self.A_log,
+            A_log=self._fused_f32_param(self.A_log, "_fused_A_log_f32"),
             dt_bias=self.dt_bias,
             state_indices=state_indices[:num_requests],
             cu_seqlens=cu_seqlens[: num_requests + 1],
             num_accepted_tokens=num_accepted_tokens[:num_requests],
             state=self.kv_cache[1],
             output_gate=output_gate,
-            norm_weight=self.norm.weight,
+            norm_weight=self._fused_f32_param(
+                self.norm.weight, "_fused_norm_weight_f32"),
             out=core_attn_out,
             scale=self.head_k_dim**-0.5,
             norm_eps=self.layer_norm_epsilon,
@@ -1966,6 +1993,17 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 attn_metadata=attn_metadata,
             )
             return
+        global _GDN_MTP_FALLBACK_LOGGED
+        if not _GDN_MTP_FALLBACK_LOGGED:
+            _GDN_MTP_FALLBACK_LOGGED = True
+            logger.info(
+                "GDN fused MTP decode NOT used (fallback) layer=%s "
+                "num_decodes=%d num_spec=%d prefills=%d state_dtype=%s "
+                "decode_kernel=%s spec_masks=%s",
+                self.prefix, attn_metadata.num_decodes,
+                attn_metadata.num_spec_decodes, attn_metadata.num_prefills,
+                self.kv_cache[1].dtype, self.gdn_decode_kernel,
+                attn_metadata.spec_sequence_masks is not None)
         self._forward_core(
             mixed_qkv=mixed_qkv,
             b=b.contiguous(),
@@ -1980,7 +2018,20 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         )
 
 
-@eager_break_during_capture
+def _gdn_eager_break(fn):
+    """Conditionally keep the GDN decode op out of the cudagraph.
+
+    When VLLM_SM70_GDN_GRAPH is enabled (the default), the metadata builder
+    serves decode metadata from fixed graph buffers, so the op can be
+    captured into the graph and skip per-step eager Python. When disabled,
+    fall back to the legacy eager break.
+    """
+    if envs.VLLM_SM70_GDN_GRAPH:
+        return fn
+    return eager_break_during_capture(fn)
+
+
+@_gdn_eager_break
 def qwen_gdn_attention_core(
     qkv_or_qkvz: torch.Tensor,
     b_or_ba: torch.Tensor,
@@ -2028,7 +2079,7 @@ direct_register_custom_op(
 )
 
 
-@eager_break_during_capture
+@_gdn_eager_break
 def qwen_gdn_attention_core_fused_norm_packed(
     mixed_qkvz: torch.Tensor,
     ba: torch.Tensor,

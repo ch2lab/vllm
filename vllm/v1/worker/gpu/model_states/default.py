@@ -108,15 +108,25 @@ class DefaultModelState(ModelState):
             self.execute_mm_encoder(scheduled_encoder_inputs)
 
             mm_embeds, is_mm_embed = super().gather_mm_embeddings(input_batch)
-            if self.mm_pruner is not None and mm_embeds:
-                # EVS: recompute mrope positions for pruned media.
-                mm_embeds = self.mm_pruner.recompute(mm_embeds, input_batch, req_states)
-                # We must flush the staged rope updates for prepare_inputs() to pick up.
-                self.apply_staged_writes()
+            if not mm_embeds:
+                # Text-only step: no multimodal tokens in this batch's token
+                # range, so the mask is all-False and the merge is a no-op —
+                # skip the mask/merge machinery (equivalent to the all-False
+                # path of get_inputs_embeds) and write the same CUDA-graph
+                # buffer directly.
+                x = self.model.embed_input_ids(input_ids_unpadded)
+                self.encoder_runner.inputs_embeds[: x.shape[0]] = x
+                inputs_embeds = self.encoder_runner.inputs_embeds
+            else:
+                if self.mm_pruner is not None:
+                    # EVS: recompute mrope positions for pruned media.
+                    mm_embeds = self.mm_pruner.recompute(mm_embeds, input_batch, req_states)
+                    # We must flush the staged rope updates for prepare_inputs() to pick up.
+                    self.apply_staged_writes()
 
-            inputs_embeds = self.encoder_runner.get_inputs_embeds(
-                input_ids_unpadded, mm_embeds, is_mm_embed
-            )
+                inputs_embeds = self.encoder_runner.get_inputs_embeds(
+                    input_ids_unpadded, mm_embeds, is_mm_embed
+                )
         else:
             input_embeddings = self.model.embed_input_ids(input_ids_unpadded)
             self.inputs_embeds[: input_embeddings.shape[0]] = input_embeddings

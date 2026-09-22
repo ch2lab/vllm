@@ -197,6 +197,11 @@ if TYPE_CHECKING:
     VLLM_SM70_SPLITD_PREFILL: bool = True
     VLLM_SM70_VARLEN_DECODE: bool = False
     VLLM_SM70_FLASHDECODE: bool = False
+    VLLM_SM70_GDN_GRAPH: bool = True
+    VLLM_SM70_GDN_GRAPH_DECODE: bool = False
+    VLLM_SM70_GDN_FILTER_SPLIT: bool = False
+    VLLM_SM70_DECODE_HOSTOPT: bool = False
+    VLLM_SM70_GDN_HOSTOPT: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
@@ -1541,23 +1546,25 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DEEPEPLL_NVFP4_DISPATCH": lambda: bool(
         int(os.getenv("VLLM_DEEPEPLL_NVFP4_DISPATCH", "0"))
     ),
-    # SM70 (Volta V100) Marlin NVFP4 GEMM binding. Gates the SM70-only
-    # NVFP4 GEMM op (see vllm.sm70_nvfp4_ops); only effective on exact SM70.
-    "VLLM_SM70_NVFP4": lambda: bool(int(os.getenv("VLLM_SM70_NVFP4", "0"))),
+    # SM70 (Volta V100) NVFP4 GEMM binding. Gates the SM70-only NVFP4 GEMM op
+    # (see vllm.sm70_nvfp4_ops). Enabled by default on exact SM70 hardware
+    # (hardware check in sm70_nvfp4_ops.is_enabled); set to 0 to force the
+    # fallback Marlin/CuTe-DSL path.
+    "VLLM_SM70_NVFP4": lambda: bool(int(os.getenv("VLLM_SM70_NVFP4", "1"))),
     # SM70 (Volta V100) NVFP4 KV-cache store path. Gated: when enabled on an
     # SM70 (family 70) device, the FlashInfer backend enables the NVFP4 KV-cache
-    # store/selection path (BF16/FP16 query+output, uint8 packed KV).  Off by
-    # default so the backend is byte-identical to upstream unless explicitly on.
+    # store/selection path (BF16/FP16 query+output, uint8 packed KV). Enabled
+    # by default on SM70 hardware; set to 0 to force the upstream path.
     "VLLM_SM70_NVFP4_KV": lambda: bool(
-        int(os.getenv("VLLM_SM70_NVFP4_KV", "0"))
+        int(os.getenv("VLLM_SM70_NVFP4_KV", "1"))
     ),
     # SM70 (Volta V100) native FlashInfer paged attention (16-bit decode+prefill).
     # When enabled on an SM70 (family 70) device, the FlashInfer backend becomes
-    # selectable (its supports_compute_capability floor is normally SM80+). Off by
-    # default so backend selection is byte-identical to upstream unless explicitly
-    # turned on.
+    # selectable (its supports_compute_capability floor is normally SM80+).
+    # Enabled by default on SM70 hardware; set to 0 to fall back to the upstream
+    # backend selection.
     "VLLM_SM70_FLASHINFER_ATTN": lambda: bool(
-        int(os.getenv("VLLM_SM70_FLASHINFER_ATTN", "0"))
+        int(os.getenv("VLLM_SM70_FLASHINFER_ATTN", "1"))
     ),
     # SM70 (Volta V100) NVFP4 KV: route q=1 decode through the varlen
     # paged-prefill path (SM70PAGED in-kernel-dequant kernel, the same one
@@ -1583,10 +1590,55 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # SM70 (Volta V100) splitd D256 paged prefill kernel (1Cat port). When
     # enabled, full-attention prefill steps that pass the admission contract
     # (vllm.v1.attention.ops.sm70_splitd_policy) run the exact-tile WMMA
-    # kernel on an fp16 NHD KV stage instead of the FA2 paged path. Off by
-    # default so the prefill path is byte-identical to the FA2 behavior.
+    # kernel on an fp16 NHD KV stage instead of the FA2 paged path. Enabled
+    # by default on SM70 hardware (the gate also requires the NVFP4 shadow
+    # path, D256 shape, and the registered op); set to 0 to fall back to FA2.
     "VLLM_SM70_SPLITD_PREFILL": lambda: bool(
-        int(os.getenv("VLLM_SM70_SPLITD_PREFILL", "0"))
+        int(os.getenv("VLLM_SM70_SPLITD_PREFILL", "1"))
+    ),
+    # Capture the GDN decode custom op into the cudagraph instead of breaking
+    # out to eager Python every step. Requires the GDN metadata builder to
+    # serve decode metadata from fixed graph buffers (any cudagraph mode).
+    # Set to 0 to restore the legacy per-step eager execution.
+    "VLLM_SM70_GDN_GRAPH": lambda: bool(int(os.getenv("VLLM_SM70_GDN_GRAPH", "1"))),
+    # Capture the GDN decode path into piecewise cudagraphs: remove the GDN
+    # ops from splitting_ops and give uniform decode batches their own
+    # decode-shape graphs, so GDN layers stop running eager Python every
+    # step. Implies VLLM_SM70_GDN_GRAPH (fixed decode metadata buffers).
+    # Set to 1 to enable; verify output coherence and acceptance before use.
+    # Requires VLLM_SM70_GDN_GRAPH (fixed decode metadata buffers): the
+    # captured graph reads metadata from fixed buffers, so this flag is
+    # forced off when VLLM_SM70_GDN_GRAPH is off.
+    "VLLM_SM70_GDN_GRAPH_DECODE": lambda: bool(
+        int(os.getenv("VLLM_SM70_GDN_GRAPH_DECODE", "0"))
+        and int(os.getenv("VLLM_SM70_GDN_GRAPH", "1"))
+    ),
+    # Independently remove the GDN ops from splitting_ops so they run inside
+    # the compiled piecewise pieces (instead of anchoring eager pieces).
+    # Orthogonal to VLLM_SM70_GDN_GRAPH_DECODE (decode-shape graph dispatch);
+    # keep off until the in-piece capture path is verified stable.
+    "VLLM_SM70_GDN_FILTER_SPLIT": lambda: bool(
+        int(os.getenv("VLLM_SM70_GDN_FILTER_SPLIT", "0"))
+        and int(os.getenv("VLLM_SM70_GDN_GRAPH", "1"))
+    ),
+    # Decode host-path optimizations for the SM70 NVFP4 flashdecode service:
+    # (1) fd_verify steps skip the FA2 paged plan and its CPU-side inputs,
+    #     including the per-step seq_lens D2H sync that drained the GPU
+    #     pipeline (the kv len is now copied GPU->GPU from the attention
+    #     seq_lens buffer); (2) the GDN metadata builder takes an all-spec
+    #     fast path (views + cached static tensors instead of per-step
+    #     gathers/aranges). Set to 1 to enable; requires
+    #     VLLM_SM70_FLASHDECODE.
+    "VLLM_SM70_DECODE_HOSTOPT": lambda: bool(
+        int(os.getenv("VLLM_SM70_DECODE_HOSTOPT", "0"))
+        and int(os.getenv("VLLM_SM70_FLASHDECODE", "0"))
+    ),
+    # Gates only the GDN all-spec fast path of VLLM_SM70_DECODE_HOSTOPT
+    # (the FlashInfer plan-free part stays under DECODE_HOSTOPT). Split
+    # out so the two hostopt components can be A/B'd independently.
+    "VLLM_SM70_GDN_HOSTOPT": lambda: bool(
+        int(os.getenv("VLLM_SM70_GDN_HOSTOPT", "0"))
+        and int(os.getenv("VLLM_SM70_FLASHDECODE", "0"))
     ),
     # Whether to turn on the outlines cache for V1
     # This cache is unbounded and on disk, so it's not safe to use in

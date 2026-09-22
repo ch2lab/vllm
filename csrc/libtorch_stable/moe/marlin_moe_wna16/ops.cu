@@ -24,6 +24,7 @@
 #endif
 
 #include "kernel.h"
+#include "sm70_marlin_moe_sm70.h"
 
 #include <torch/csrc/stable/accelerator.h>
 #include <torch/csrc/stable/library.h>
@@ -594,6 +595,18 @@ torch::stable::Tensor moe_wna16_marlin_gemm(
     STD_TORCH_CHECK(
         !(b_type == vllm::kFE2M1f && s_type == vllm::kFE4M3fn),
         "the global_scale parameter must be passed for nvfp4 format.");
+  }
+
+  // SM70 (V100/Volta): NVFP4 MoE GEMM via the SM70 Marlin kernel.
+  if (b_type == vllm::kFE2M1f && s_type == vllm::kFE4M3fn &&
+      a_type == vllm::kFloat16 && c_type == vllm::kFloat16 &&
+      group_size == 16 && !use_atomic_add && !use_fp32_reduce &&
+      !b_bias_or_none.has_value() && !b_zeros_or_none.has_value() &&
+      get_device_prop()->major == 7 && get_device_prop()->minor == 0) {
+    return MARLIN_NAMESPACE_NAME::sm70_marlin_nvfp4_gemm(
+        a, c, b_q_weight, b_scales, global_scale, sorted_token_ids,
+        expert_ids, num_tokens_past_padded, topk_weights, moe_block_size,
+        top_k, mul_topk_weights, size_m, size_n, size_k, group_size);
   }
 
   bool has_bias = b_bias_or_none.has_value();

@@ -217,6 +217,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
     PerTensorTorchFP8ScaledMMLinearKernel,
     RowWiseTorchFP8ScaledMMLinearKernel,
 )
+from vllm.model_executor.kernels.linear.scaled_mm.sm70 import (
+    Sm70Fp8DequantLinearKernel,
+)
 from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
     ROCmFP8ScaledMMLinearKernel,
 )
@@ -416,6 +419,9 @@ _POSSIBLE_INT8_KERNELS: dict[PlatformEnum, list[type[Int8ScaledMMLinearKernel]]]
 # in priority/performance order (when available)
 _POSSIBLE_FP8_KERNELS: dict[PlatformEnum, list[type[FP8ScaledMMLinearKernel]]] = {
     PlatformEnum.CUDA: [
+        # SM70-only dequant fallback; first so it wins on V100 before the
+        # native FP8 backends (which are unusable without FP8 hardware).
+        Sm70Fp8DequantLinearKernel,
         FlashInferFP8ScaledMMLinearKernel,
         CutlassFP8ScaledMMLinearKernel,
         B12xTensorFP8ScaledMMLinearKernel,

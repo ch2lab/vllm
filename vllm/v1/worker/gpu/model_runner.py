@@ -1399,10 +1399,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # stubs that the draft scatter did not cover) would be embedded as a
         # negative index -> indexSelectSmallIndex device-side assert. Replace
         # with token 1 so the forward stays in bounds on both PP ranks.
+        # -1 stubs are only written by spec-decode steps; `neg.any()` below
+        # is a GPU->CPU stream sync, so only pay it when placeholders are
+        # possible (non-spec steps fully overwrite the grid every step).
         input_grid = self.input_buffers.input_ids[:num_tokens]
-        neg = input_grid < 0
-        if neg.any():
-            input_grid[neg] = 1
+        if draft_tokens:
+            neg = input_grid < 0
+            if neg.any():
+                input_grid[neg] = 1
 
         # CPU upper bound on seq_lens; padded entries left at zero.
         num_computed_tokens_np = self.req_states.num_computed_tokens_np[idx_mapping_np]
@@ -1894,9 +1898,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
             model_output = self.cudagraph_manager.run_fullgraph(batch_desc)
         else:
-            # For piecewise and eager mode, just call model().
+            # For piecewise and eager mode, just call model(). Carry the
+            # dispatched descriptor's num_reqs/uniform through so decode-shape
+            # PIECEWISE batches hit the piece entries they were captured with
+            # (relaxed descs leave these unset and behave as before).
             batch_descriptor = BatchDescriptor(
                 num_tokens=input_batch.num_tokens_after_padding,
+                num_reqs=batch_desc.num_reqs,
+                uniform=(
+                    batch_desc.cg_mode == CUDAGraphMode.PIECEWISE
+                    and batch_desc.uniform_token_count is not None
+                ),
                 has_lora=self.lora_config is not None,
                 num_active_loras=batch_desc.num_active_loras,
             )

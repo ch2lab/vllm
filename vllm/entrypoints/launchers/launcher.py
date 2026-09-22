@@ -251,12 +251,63 @@ def validate_api_server_args(args):
         )
 
 
+def log_engine_spec_config(args) -> None:
+    """Log a one-line engine / spec-decode config summary at API-server start.
+
+    Surfaces the active spec-decode method (DFlash2 / MTP / off), parallelism,
+    and (on the SM70 branch) the key host-optimization switches in a single
+    line, so a deployment's configuration is readable straight from the
+    startup log.
+    """
+    import json
+
+    spec = getattr(args, "speculative_config", None)
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except (ValueError, TypeError):
+            spec = None
+    if spec:
+        method = spec.get("method", "?")
+        n = spec.get("num_speculative_tokens", "?")
+        draft = str(spec.get("model") or "")
+        draft_short = draft.rsplit("/", 1)[-1] if draft else ""
+        spec_str = f"spec={method}(n={n}"
+        if draft_short:
+            spec_str += f", draft={draft_short}"
+        spec_str += ")"
+    else:
+        spec_str = "spec=off"
+
+    base = (
+        f"{spec_str} tp={getattr(args, 'tensor_parallel_size', 1)} "
+        f"pp={getattr(args, 'pipeline_parallel_size', 1)} "
+        f"max_batched_tokens={getattr(args, 'max_num_batched_tokens', None)} "
+        f"max_seqs={getattr(args, 'max_num_seqs', None)}"
+    )
+    # SM70 host-optimization switches (envs exist only on the SM70 branch, so
+    # the segment is omitted on other branches and this stays portable).
+    sm70 = [
+        f"{label}={int(bool(val))}"
+        for label, val in (
+            ("decode_hostopt", getattr(envs, "VLLM_SM70_DECODE_HOSTOPT", None)),
+            ("gdn_hostopt", getattr(envs, "VLLM_SM70_GDN_HOSTOPT", None)),
+            ("flashdecode", getattr(envs, "VLLM_SM70_FLASHDECODE", None)),
+        )
+        if val is not None
+    ]
+    if sm70:
+        base += " | sm70[" + ", ".join(sm70) + "]"
+    logger.info("engine config: %s", base)
+
+
 @instrument(span_name="API server setup")
 def setup_server(args, *, reuse_port: bool):
     """Validate API server args and create the server socket."""
 
     log_version_and_model(logger, VLLM_VERSION, args.model)
     log_non_default_args(args)
+    log_engine_spec_config(args)
 
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)

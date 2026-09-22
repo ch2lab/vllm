@@ -3,8 +3,9 @@
 
 """SM70 (Volta / V100) NVFP4 op bindings.
 
-Binds the SM70 NVFP4 ops (registered in the vLLM C extension) and gates them
-behind the ``VLLM_SM70_NVFP4`` env switch and an exact-SM70 hardware check.
+Binds the SM70 NVFP4 ops (registered in the vLLM C extension). Enabled by
+default on exact-SM70 hardware (is_enabled = hardware check + registered op);
+``VLLM_SM70_NVFP4=0`` forces the fallback path.
 
 The 1x storage layout is the QPN2 4-bit column-major layout (one single
 4-bit weight per linear layer). Decode (m<=32) reads it directly via the

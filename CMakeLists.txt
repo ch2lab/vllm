@@ -750,6 +750,14 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
        "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_dequant.cu"
        "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_qpn2.cu"
        "csrc/libtorch_stable/quantization/marlin/sm70_nvfp4_dispatch.cu")
+    # SM70-only builds skip the standard Marlin block above, which is the only
+    # place the repack kernels get compiled — but NVFP4 MoE weight conversion
+    # (gptq_marlin_repack) is arch-agnostic (cp.async degrades to plain copies
+    # below SM80) and is required on SM70 too. Add it here in that case.
+    if(NOT MARLIN_OTHER_ARCHS)
+      list(APPEND SM70_NVFP4_SRCS
+           "csrc/libtorch_stable/quantization/marlin/gptq_marlin_repack.cu")
+    endif()
     set_gencode_flags_for_srcs(
       SRCS "${SM70_NVFP4_SRCS}"
       CUDA_ARCHS "${SM70_NVFP4_ARCHS}")
@@ -1163,11 +1171,13 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
     set(MLA_ARCHS)
   endif()
 
+  # GDN decode: build for SM70 (V100, cp.async-free port) and CC8.0+.
+  cuda_archs_loose_intersection(FUSED_GDN_DECODE_ARCHS
+    "7.0;8.0;8.6;8.9;9.0a;10.0f;11.0f;12.0f" "${CUDA_ARCHS}")
+
   if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
     cuda_archs_loose_intersection(FUSED_KDA_DECODE_ARCHS
       "9.0a;10.0f;12.0f" "${CUDA_ARCHS}")
-    cuda_archs_loose_intersection(FUSED_GDN_DECODE_ARCHS
-      "8.0;8.6;8.9;9.0a;10.0f;11.0f;12.0f" "${CUDA_ARCHS}")
   endif()
   if(FUSED_KDA_DECODE_ARCHS)
     set(FUSED_KDA_DECODE_SRC
@@ -1386,8 +1396,8 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   else()
     cuda_archs_loose_intersection(MARLIN_MOE_FP8_ARCHS "8.9;12.0a;12.1a" "${CUDA_ARCHS}")
   endif()
-  # moe marlin arches for other files
-  cuda_archs_loose_intersection(MARLIN_MOE_OTHER_ARCHS "7.5;8.0+PTX" "${CUDA_ARCHS}")
+  # moe marlin arches for other files (7.0: SM70 NVFP4 Marlin MoE dispatch)
+  cuda_archs_loose_intersection(MARLIN_MOE_OTHER_ARCHS "7.0;7.5;8.0+PTX" "${CUDA_ARCHS}")
   if (MARLIN_MOE_OTHER_ARCHS)
 
     #
@@ -1474,6 +1484,21 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
         PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
     endif()
     list(APPEND VLLM_MOE_EXT_SRC "${MARLIN_MOE_OTHER_SRC}")
+
+    # SM70 (V100/Volta) NVFP4 Marlin MoE GEMM kernel
+    cuda_archs_loose_intersection(MARLIN_MOE_SM70_ARCHS "7.0" "${CUDA_ARCHS}")
+    if (MARLIN_MOE_SM70_ARCHS)
+      set(MARLIN_MOE_SM70_SRC
+          "csrc/libtorch_stable/moe/marlin_moe_wna16/sm70_marlin_nvfp4_gemm.cu")
+      set_gencode_flags_for_srcs(
+        SRCS "${MARLIN_MOE_SM70_SRC}"
+        CUDA_ARCHS "${MARLIN_MOE_SM70_ARCHS}")
+      if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+        set_source_files_properties(${MARLIN_MOE_SM70_SRC}
+          PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+      endif()
+      list(APPEND VLLM_MOE_EXT_SRC ${MARLIN_MOE_SM70_SRC})
+    endif()
 
     message(STATUS "Building Marlin MOE kernels for archs: ${MARLIN_MOE_OTHER_ARCHS}")
   else()

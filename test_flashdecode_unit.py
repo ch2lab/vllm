@@ -244,7 +244,8 @@ def test_op_q1_matches_reference():
     H_ = kv.shape[1] // 2
     splits = 4
     ws = torch.zeros(
-        R * H_ * splits * Q * 6 * (D_ + 2), dtype=torch.float32,
+        R * H_ * splits * Q * 6 * (D_ + 2)
+        + 4 * R * H_ * Q * 6 * (D_ + 2), dtype=torch.float32,
         device="cuda")
     out = torch.empty_like(q, device="cuda")
     sm70_flashdecode_op(
@@ -264,7 +265,8 @@ def test_op_chunked_blocks():
     H_ = kv.shape[1] // 2
     splits = 3
     ws = torch.zeros(
-        R * H_ * splits * Q * 6 * (D_ + 2), dtype=torch.float32,
+        R * H_ * splits * Q * 6 * (D_ + 2)
+        + 4 * R * H_ * Q * 6 * (D_ + 2), dtype=torch.float32,
         device="cuda")
     out = torch.empty_like(q, device="cuda")
     sm70_flashdecode_op(
@@ -285,7 +287,8 @@ def test_op_q4_verify_matches_reference():
     H_ = kv.shape[1] // 2
     splits = 4
     ws = torch.zeros(
-        1 * H_ * splits * 4 * 6 * (D + 2), dtype=torch.float32,
+        1 * H_ * splits * 4 * 6 * (D + 2)
+        + 4 * 1 * H_ * 4 * 6 * (D + 2), dtype=torch.float32,
         device="cuda")
     out = torch.empty_like(q, device="cuda")
     sm70_flashdecode_op(
@@ -302,7 +305,8 @@ def test_op_window_matches_reference():
     H_ = kv.shape[1] // 2
     splits = 4
     ws = torch.zeros(
-        1 * H_ * splits * 1 * 6 * (D + 2), dtype=torch.float32,
+        1 * H_ * splits * 1 * 6 * (D + 2)
+        + 4 * 1 * H_ * 1 * 6 * (D + 2), dtype=torch.float32,
         device="cuda")
     out = torch.empty_like(q, device="cuda")
     sm70_flashdecode_op(
@@ -325,7 +329,8 @@ def test_op_kv1_exact_dequant():
     H_ = kv.shape[1] // 2
     splits = 2
     ws = torch.zeros(
-        2 * H_ * splits * 1 * 6 * (D + 2), dtype=torch.float32,
+        2 * H_ * splits * 1 * 6 * (D + 2)
+        + 4 * 2 * H_ * 1 * 6 * (D + 2), dtype=torch.float32,
         device="cuda")
     out = torch.empty_like(q, device="cuda")
     sm70_flashdecode_op(

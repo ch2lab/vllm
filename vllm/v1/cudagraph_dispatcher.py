@@ -4,6 +4,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from itertools import product
 
+from vllm import envs
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor
 from vllm.logger import init_logger
@@ -202,6 +203,30 @@ class CudagraphDispatcher:
                     batch_desc = replace(batch_desc, num_reqs=None, uniform=False)
                 self.add_cudagraph_key(cudagraph_mode.mixed_mode(), batch_desc)
 
+                # SM70 GDN graph: additionally key a decode-shape graph for
+                # sizes that are whole decode batches (num_reqs x query_len).
+                # Uniform decode batches dispatch to this key (see dispatch);
+                # prefill/mixed batches keep using the relaxed key above, so
+                # the GDN prefill and decode paths are captured separately.
+                if (
+                    cudagraph_mode.mixed_mode() == CUDAGraphMode.PIECEWISE
+                    and envs.VLLM_SM70_GDN_GRAPH_DECODE
+                    and self.uniform_decode_query_len > 1
+                    and bs % self.uniform_decode_query_len == 0
+                    and bs // self.uniform_decode_query_len
+                    <= self.vllm_config.scheduler_config.max_num_seqs
+                ):
+                    self.add_cudagraph_key(
+                        CUDAGraphMode.PIECEWISE,
+                        BatchDescriptor(
+                            num_tokens=bs,
+                            num_reqs=bs // self.uniform_decode_query_len,
+                            uniform=True,
+                            has_lora=num_active_loras > 0,
+                            num_active_loras=num_active_loras,
+                        ),
+                    )
+
         # if decode cudagraph mode is FULL, and we don't already have mixed
         # mode full cudagraphs then add them here.
         if (
@@ -311,6 +336,35 @@ class CudagraphDispatcher:
                 return CUDAGraphMode.FULL, batch_desc_to_check
 
         if CUDAGraphMode.PIECEWISE in allowed_modes:
+            # SM70 GDN graph: uniform decode batches dispatch to the
+            # decode-shape key (GDN decode path captured), not the relaxed
+            # key (prefill-shape capture).
+            if (
+                envs.VLLM_SM70_GDN_GRAPH_DECODE
+                and uniform_decode
+                and self.uniform_decode_query_len > 1
+                and batch_desc.num_tokens % self.uniform_decode_query_len == 0
+                and batch_desc.num_tokens // self.uniform_decode_query_len
+                <= self.vllm_config.scheduler_config.max_num_seqs
+            ):
+                dec_desc = BatchDescriptor(
+                    num_tokens=batch_desc.num_tokens,
+                    num_reqs=batch_desc.num_tokens // self.uniform_decode_query_len,
+                    uniform=True,
+                    has_lora=has_lora,
+                    num_active_loras=effective_num_active_loras,
+                )
+                if dec_desc in self.cudagraph_keys[CUDAGraphMode.PIECEWISE]:
+                    return CUDAGraphMode.PIECEWISE, dec_desc
+            if (
+                envs.VLLM_SM70_GDN_GRAPH_DECODE
+                and uniform_decode
+                and self.uniform_decode_query_len > 1
+            ):
+                # Uniform decode batch without a matching decode-shape key
+                # (padded size not a whole decode batch): run eager instead
+                # of replaying a prefill-baked relaxed graph.
+                return CUDAGraphMode.NONE, BatchDescriptor(num_tokens)
             # also check if the relaxed key exists for more "general"
             # piecewise cudagraph
             batch_desc_to_check = replace(batch_desc, num_reqs=None, uniform=False)

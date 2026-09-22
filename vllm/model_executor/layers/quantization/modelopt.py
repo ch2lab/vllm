@@ -1566,6 +1566,16 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfigBase):
         # cores, so SM75 is sufficient. Validated end-to-end on a Tesla T4
         # (SM75) and A100 (SM80). Pairs with the FlashInfer attention SM80
         # lower bound so SM75 auto-selects a supported attention backend.
+        #
+        # SM70 (Volta/V100) exception: this deployment ships SM70 Marlin MoE
+        # NVFP4 + FP8 kernels (csrc/.../moe/marlin_moe_wna16/sm70_marlin_*), so
+        # the NVFP4-MoE / FP8 paths are usable there too. Lower the floor to
+        # 70 only on exact SM70 so every other arch keeps the 75 floor.
+        try:
+            if tuple(torch.cuda.get_device_capability()) == (7, 0):
+                return 70
+        except Exception:
+            pass
         return 75
 
     @classmethod

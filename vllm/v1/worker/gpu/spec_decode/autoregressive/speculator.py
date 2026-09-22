@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -7,6 +9,7 @@ import torch.nn as nn
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.distributed import get_tp_group
 from vllm.forward_context import BatchDescriptor, set_forward_context
 from vllm.logger import init_logger
 from vllm.triton_utils import tl, triton
@@ -147,6 +150,32 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             decode_query_len=1,
         )
 
+    @contextmanager
+    def _force_nccl_for_drafter_capture(self):
+        """Route the drafter's allreduces to NCCL while its cudagraphs are
+        captured. The custom-AR graph-buffer registration
+        (``register_graph_buffers`` / ``get_graph_buffer_ipc_meta``) is not
+        capture-safe for the drafter on SM70: when the drafter (captured
+        after the main model) re-registers its allreduce buffers it faults
+        with an illegal memory access. NCCL is a real (non-eager) collective
+        so the drafter keeps its graphs, and the main model's fast custom AR
+        is left untouched (it captured earlier, before this flag is set)."""
+        comm = None
+        try:
+            dc = get_tp_group().device_communicator
+            comm = getattr(dc, "ca_comm", None) if dc is not None else None
+        except Exception:
+            comm = None
+        if comm is None:
+            yield
+            return
+        prev = comm._force_nccl
+        comm._force_nccl = True
+        try:
+            yield
+        finally:
+            comm._force_nccl = prev
+
     def capture(self) -> None:
         logger.info("Capturing model for speculator...")
         # Reset indices to zeros to prevent stale values from prior
@@ -154,51 +183,54 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         self.last_token_indices.zero_()
         self.idx_mapping.zero_()
 
-        # Capture the prefill routine (model forward + compute_logits +
-        # sample).
-        # For FULL graphs, the entire routine is recorded as one graph.
-        # For PIECEWISE, only the model's compiled regions are captured
-        # and the rest (compute_logits, gumbel_sample) runs eagerly.
-        # Draft prefill reuses the target model's attention metadata at
-        # runtime, so capture builds its dummy metadata through the target
-        # model runner's builders and buffers.
-        assert self.prefill_cudagraph_manager is not None
-        if self.prefill_cudagraph_manager.use_breakable_cg:
-            self.prefill_cudagraph_manager.init_breakable_cg_runner(self.model)
+        with self._force_nccl_for_drafter_capture():
+            # Capture the prefill routine (model forward + compute_logits +
+            # sample).
+            # For FULL graphs, the entire routine is recorded as one graph.
+            # For PIECEWISE, only the model's compiled regions are captured
+            # and the rest (compute_logits, gumbel_sample) runs eagerly.
+            # Draft prefill reuses the target model's attention metadata at
+            # runtime, so capture builds its dummy metadata through the
+            # target model runner's builders and buffers.
+            assert self.prefill_cudagraph_manager is not None
+            if self.prefill_cudagraph_manager.use_breakable_cg:
+                self.prefill_cudagraph_manager.init_breakable_cg_runner(
+                    self.model
+                )
 
-        self.on_prefill_begin(self.max_num_reqs)
-        self.prefill_cudagraph_manager.capture(
-            self._prefill,
-            self.model_state,
-            self.target_input_buffers,
-            self.block_tables,
-            self.target_attn_groups,
-            self.kv_cache_config,
-            progress_bar_desc="Capturing prefill CUDA graphs",
-        )
-        self.on_prefill_end(self.max_num_reqs)
+            self.on_prefill_begin(self.max_num_reqs)
+            self.prefill_cudagraph_manager.capture(
+                self._prefill,
+                self.model_state,
+                self.target_input_buffers,
+                self.block_tables,
+                self.target_attn_groups,
+                self.kv_cache_config,
+                progress_bar_desc="Capturing prefill CUDA graphs",
+            )
+            self.on_prefill_end(self.max_num_reqs)
 
-        if self.num_speculative_steps == 1:
-            return
+            if self.num_speculative_steps == 1:
+                return
 
-        self.on_multi_step_decode_begin(self.max_num_reqs)
-        # Capture either the fused decode loop or one decode step per graph.
-        assert self.decode_cudagraph_manager is not None
-        decode_fn = (
-            self._generate_fused_drafts
-            if self.use_fused_multi_step_decode
-            else self._generate_draft
-        )
-        self.decode_cudagraph_manager.capture(
-            decode_fn,
-            self.model_state,
-            self.input_buffers,
-            self.block_tables,
-            self.attn_groups,
-            self.kv_cache_config,
-            progress_bar_desc="Capturing decode CUDA graphs",
-        )
-        self.on_multi_step_decode_end(self.max_num_reqs)
+            self.on_multi_step_decode_begin(self.max_num_reqs)
+            # Capture either the fused decode loop or one decode step per graph.
+            assert self.decode_cudagraph_manager is not None
+            decode_fn = (
+                self._generate_fused_drafts
+                if self.use_fused_multi_step_decode
+                else self._generate_draft
+            )
+            self.decode_cudagraph_manager.capture(
+                decode_fn,
+                self.model_state,
+                self.input_buffers,
+                self.block_tables,
+                self.attn_groups,
+                self.kv_cache_config,
+                progress_bar_desc="Capturing decode CUDA graphs",
+            )
+            self.on_multi_step_decode_end(self.max_num_reqs)
 
     @torch.inference_mode()
     def propose(
@@ -438,6 +470,12 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
                 hidden_states=self.hidden_states[:num_tokens],
                 inputs_embeds=inputs_embeds,
             )
+            if os.environ.get("VLLM_SM70_SHADOW_DEBUG") == "1":
+                print(
+                    f"[SPECTOP] n_tok={num_tokens} mode={cudagraph_runtime_mode} "
+                    f"desc={batch_descriptor}",
+                    flush=True,
+                )
             if cudagraph_runtime_mode == CUDAGraphMode.PIECEWISE:
                 # Draft prefill with PIECEWISE cudagraph (compiled PW or breakable),
                 # chosen inside run_pw_graph.
@@ -448,6 +486,8 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             else:
                 # Eager (NONE): call the raw model directly.
                 ret_hidden_states = self.model(**model_inputs)
+            if os.environ.get("VLLM_SM70_SHADOW_DEBUG") == "1":
+                print("[SPECEND] model call returned", flush=True)
         # Some MTP models declare a single-tensor contract but return
         # (logits_hidden, feedback_hidden) for final-norm correctness.
         if isinstance(ret_hidden_states, tuple):

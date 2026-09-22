@@ -35,6 +35,8 @@ stored linearly (the store kernel disables the trtllm-gen V-scale swizzle
 for compute capability major == 7).
 """
 
+import os
+
 import torch
 
 from vllm.triton_utils import tl, triton
@@ -212,6 +214,20 @@ def sm70_nvfp4_paged_dequant(
 
     B_s = out.shape[0]
     sreq, st0 = _shadow_block_maps(B_s, kv_lens, N, kv_cache.device)
+    if os.environ.get("VLLM_SM70_SHADOW_DEBUG") == "1":
+        try:
+            _bmax = int(block_table.max().item())
+            _bmin = int(block_table.min().item())
+        except Exception:
+            _bmax = -999
+            _bmin = -999
+        print(
+            f"[DEQDBG] kv_cache_B={kv_cache.shape[0]} N={N} F={F} "
+            f"bt={tuple(block_table.shape)} bt_min={_bmin} bt_max={_bmax} "
+            f"B_s={B_s} kv_lens={kv_lens.tolist()} "
+            f"{'OOB!' if _bmax >= kv_cache.shape[0] else 'ok'}",
+            flush=True,
+        )
 
     grid = (B_s, H, N)
     for side, scale in ((0, k_scale), (1, v_scale)):
@@ -522,3 +538,113 @@ def sm70_shadow_plan_tensors(
     last_page_len = kv_lens % N
     last_page_len = torch.where(last_page_len == 0, N, last_page_len)
     return indptr, indices, last_page_len, kv_lens, B_s
+
+
+@triton.jit
+def _sm70_fp8_dequant_kernel(
+    kv_ptr,  # fp8 [B, H, N, 2D] (K in [:D], V in [D:2D])
+    bt_ptr,  # int32 [num_reqs, max_blocks]
+    sreq_ptr,  # int32 [B_s] shadow block -> request
+    st0_ptr,  # int32 [B_s] shadow block -> first token index (i0 * N)
+    out_ptr,  # fp16 [B_s, H, N, 2D] (K = [:D], V = [D:2D])
+    k_scale,  # f32 scalar: layer _k_scale_float
+    v_scale,  # f32 scalar: layer _v_scale_float
+    stride_block,  # i64 source block stride (fp8 elements)
+    stride_head,  # i64 source head stride
+    stride_tok,  # i64 source token stride
+    bt_cols: tl.constexpr,  # block_table row width
+    H: tl.constexpr,  # num kv heads
+    D: tl.constexpr,  # head dim
+    N: tl.constexpr,  # block size
+):
+    """One program per (shadow block, kv head, token in block).
+
+    The FP8 KV-cache read side is a plain 1-byte value scaled by the layer's
+    per-tensor scale -- no nibble LUT, no per-16-dim e4m3 scale (unlike NVFP4),
+    so the dequant is a straight ``fp8 -> f32 * scale -> fp16``. K and V share
+    the last dimension of the paged page (K in ``[0:D]``, V in ``[D:2D]``).
+    Source strides are taken from the HND-canonicalized view so any
+    underlying physical layout is handled.
+    """
+    pid_b = tl.program_id(0)  # shadow block
+    pid_h = tl.program_id(1)  # kv head
+    n = tl.program_id(2)  # token within the shadow block
+
+    r = tl.load(sreq_ptr + pid_b)
+    i0 = tl.load(st0_ptr + pid_b) // N
+    b = tl.load(bt_ptr + r * bt_cols + i0).to(tl.int64)
+
+    d = tl.arange(0, D)
+    src_base = (
+        b * stride_block.to(tl.int64)
+        + pid_h.to(tl.int64) * stride_head.to(tl.int64)
+        + n.to(tl.int64) * stride_tok.to(tl.int64)
+    )
+    k = tl.load(kv_ptr + src_base + d).to(tl.float32)
+    v = tl.load(kv_ptr + src_base + D + d).to(tl.float32)
+
+    dst_base = (
+        pid_b.to(tl.int64) * (H * N * 2 * D)
+        + pid_h.to(tl.int64) * (N * 2 * D)
+        + n.to(tl.int64) * (2 * D)
+    )
+    tl.store(out_ptr + dst_base + d, (k * k_scale).to(tl.float16))
+    tl.store(out_ptr + dst_base + D + d, (v * v_scale).to(tl.float16))
+
+
+def sm70_fp8_paged_dequant(
+    kv_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    kv_lens: torch.Tensor,
+    out: torch.Tensor,
+    k_scale: float,
+    v_scale: float,
+) -> None:
+    """Dequantize paged FP8 KV into an fp16 shadow paged buffer.
+
+    Mirrors ``sm70_nvfp4_paged_dequant`` but for the plain FP8 cache: the
+    source page is ``[B, H, N, 2D]`` (1 byte/elt, K/V in the last dim) and the
+    dequant is ``value * scale``. The fp16 shadow buffer (identity block table,
+    see ``sm70_shadow_plan_tensors``) is then read by the mature fp16 paged
+    FA2 prefill/decode -- the flashinfer FP8 paged kernels are not sm_70-safe.
+
+    ``kv_cache`` must be the HND-canonicalized view (K in ``[0:D]``, V in
+    ``[D:2D]`` of the last dim); its strides are read, so any physical layout
+    behind the view is honored.
+
+    Args:
+        kv_cache: fp8 layer cache ``[B, H_kv, N, 2*D]`` (HND: K in ``[0:D]``,
+            V in ``[D:2D]``).
+        block_table: int32 ``[num_reqs, max_blocks]`` (device), the primary
+            fp8 cache block table for this step.
+        kv_lens: int32 ``[num_reqs]`` per-request KV lengths.
+        out: fp16 shadow buffer ``[B_s, H_kv, N, 2*D]``; ``B_s`` must equal
+            the total shadow block allotment of
+            ``sm70_shadow_plan_tensors(kv_lens, N)``.
+        k_scale, v_scale: the layer's ``_k_scale_float`` / ``_v_scale_float``.
+    """
+    _, H, N, two_d = kv_cache.shape
+    D = two_d // 2
+    strides = kv_cache.stride()
+
+    B_s = out.shape[0]
+    sreq, st0 = _shadow_block_maps(B_s, kv_lens, N, kv_cache.device)
+
+    grid = (B_s, H, N)
+    _sm70_fp8_dequant_kernel[grid](
+        kv_cache,
+        block_table,
+        sreq,
+        st0,
+        out,
+        k_scale=k_scale,
+        v_scale=v_scale,
+        stride_block=strides[0],
+        stride_head=strides[1],
+        stride_tok=strides[2],
+        bt_cols=block_table.shape[1],
+        H=H,
+        D=D,
+        N=N,
+        num_warps=4,
+    )

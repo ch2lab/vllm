@@ -209,8 +209,14 @@ def get_flash_attn_version(
             fa_version = 2
 
         if not is_fa_version_supported(fa_version):
-            logger.error(
-                "Cannot use FA version %d is not supported due to %s",
+            # No usable FlashAttention version on this device (e.g. FA2 needs
+            # compute capability >= 8, which Volta / SM70 lacks). This is a
+            # normal capability fallback, not an error: the caller receives
+            # None below and uses a different attention backend. Log once at
+            # warning level rather than a repeated, alarming ERROR.
+            logger.warning_once(
+                "FlashAttention v%d not supported on this device (%s); "
+                "falling back to a non-FlashAttention attention backend.",
                 fa_version,
                 fa_version_unsupported_reason(fa_version),
             )

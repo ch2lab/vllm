@@ -3979,6 +3979,23 @@ class GPUModelRunner(
             num_reqs=num_reqs,
             force_uniform_decode=force_uniform_decode,
         )
+        # SM70 GDN graph: the GDN ops run inside captured piecewise pieces,
+        # and each captured piece bakes in the GDN path of its capture
+        # descriptor. Only uniform decode batches may replay graphs
+        # (decode-shape keys, decode path baked in); any batch containing a
+        # prefill request must run eager so the GDN op handles the real
+        # per-request phase (a prefill piece bakes the prefill path and is
+        # not split-invariant).
+        if (
+            force_uniform_decode is None
+            and envs.VLLM_SM70_GDN_GRAPH_DECODE
+            and num_reqs > 0
+        ):
+            computed = self.input_batch.num_computed_tokens_cpu[:num_reqs]
+            pure_decode = bool(computed.size and int(computed.min()) > 0)
+            if not (pure_decode and uniform_decode):
+                force_eager = True
+                uniform_decode = False
         # Encoder-decoder models only support CG for decoder_step > 0 (no enc_output
         # is present). Also, chunked-prefill is disabled, so batch are uniform.
         has_encoder_output = (

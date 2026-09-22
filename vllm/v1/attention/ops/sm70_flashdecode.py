@@ -181,7 +181,8 @@ def sm70_flashdecode_op(
         splits: KV split count (grid dim; fixed per launch / capture).
         q_rows: active rows per request (1 = decode, <= 8 = verify).
         workspace: fp32 with >=
-            ``R * H * splits * q_rows * (HQ // H) * (D + 2)`` elements
+            ``R * H * splits * q_rows * (HQ // H) * (D + 2)``
+            + ``4 * R * H * q_rows * (HQ // H) * (D + 2)`` elements
             (persistent; reused across layers/steps).
     """
     assert q.dtype == torch.float16 and out.dtype == torch.float16
@@ -197,6 +198,7 @@ def sm70_flashdecode_op(
     assert HQ % H == 0, f"GQA requires {HQ} qo heads over {H} kv heads"
     assert (
         R * H * splits * q_rows * (HQ // H) * (D + 2)
+        + 4 * R * H * q_rows * (HQ // H) * (D + 2)
         <= workspace.numel()
     ), "flashdecode workspace too small"
     try:

@@ -333,6 +333,48 @@ def _repack_marlin_experts(
     return out
 
 
+def _nvfp4_sm70_repack_experts(
+    weight: torch.Tensor,
+    size_n: int,
+    size_k: int,
+) -> torch.Tensor:
+    """Repack NVFP4 MoE weights (E, size_n, size_k/2) uint8 codes into the
+    SM70 Marlin kernel layout. Within each 16-wide K tile the storage order
+    is (local_k, local_n_vec, n_tile) with n_tile (64-wide N tile) fastest so
+    the kernel's vectorized c-load reads contiguous words; each word holds the
+    8 N values of one local_n_vec at one K. Nibble j holds N offset
+    [0, 2, 4, 6, 1, 3, 5, 7][j] to match the kernel's FP4 dequant fragment
+    order. Scales keep the standard marlin permutation."""
+    num_experts = weight.shape[0]
+    codes = weight.to(torch.int32)
+    lo = codes & 0xF
+    hi = (codes >> 4) & 0xF
+    # (E, size_n, size_k): even k from the low nibble, odd k from the high.
+    vals = torch.stack([lo, hi], dim=-1).view(num_experts, size_n, size_k)
+    nperm = torch.tensor([0, 2, 4, 6, 1, 3, 5, 7], device=weight.device)
+    groups = vals.view(num_experts, size_n // 8, 8, size_k)
+    perm = groups.index_select(2, nperm)
+    words = torch.zeros_like(perm[:, :, 0, :])
+    for j in range(8):
+        words |= perm[:, :, j, :] << (4 * j)
+
+    out = torch.zeros(
+        num_experts, size_k // 16, 2 * size_n, dtype=torch.int32,
+        device=weight.device,
+    )
+    k = torch.arange(size_k, device=weight.device)
+    n8 = torch.arange(size_n // 8, device=weight.device)
+    # Storage order (local_k, local_n_vec, n_tile) with n_tile fastest so the
+    # kernel's vectorized c-load (one 64-wide N tile per c-word) reads
+    # contiguous words. n_tile = n8 // 8, local_n_vec = n8 % 8.
+    k_pos = (k // 16) * (2 * size_n) + (k % 16) * (size_n // 8)
+    n_pos = (n8 % 8) * (size_n // 64) + (n8 // 8)
+    cols = n_pos.view(1, -1, 1) + k_pos.view(1, 1, -1)
+    rows = torch.arange(num_experts, device=weight.device).view(-1, 1, 1)
+    out.view(num_experts, -1)[rows, cols] = words
+    return out
+
+
 def prepare_nvfp4_moe_layer_for_marlin(
     layer: RoutedExperts,
     w13: torch.Tensor,
@@ -390,6 +432,13 @@ def prepare_nvfp4_moe_layer_for_marlin(
     device = w13.device
     param_dtype = layer.params_dtype
     is_a_8bit = input_dtype is not None and input_dtype.itemsize == 1
+    # The SM70 (V100) Marlin MoE kernel consumes a dense-tile qweight
+    # layout; it is the only runnable NVFP4 MoE backend on SM70.
+    use_sm70_repack = (
+        device.type == "cuda"
+        and torch.cuda.get_device_capability(device) == (7, 0)
+        and param_dtype == torch.float16
+    )
 
     # WORKSPACE
     layer.workspace = marlin_make_workspace_new(
@@ -410,6 +459,8 @@ def prepare_nvfp4_moe_layer_for_marlin(
             weight = pad_w2(weight, packing=2)
             size_k = padded_N
 
+        if use_sm70_repack:
+            return _nvfp4_sm70_repack_experts(weight, size_n, size_k)
         return _repack_marlin_experts(weight, size_n, size_k, is_a_8bit)
 
     w13 = repack_weight(w13, "w13")
@@ -435,14 +486,22 @@ def prepare_nvfp4_moe_layer_for_marlin(
         combined_scale_factor = _nvfp4_compute_scale_factor(scales, param_dtype)
 
         for i in range(E):
-            scale = scales[i].T
-            marlin_scales = marlin_permute_scales(
-                s=scale,
-                size_k=size_k,
-                size_n=size_n,
-                group_size=GROUP_SIZE,
-                is_a_8bit=is_a_8bit,
-            )
+            if use_sm70_repack:
+                # The SM70 MoE Marlin kernel reads scales as 8 consecutive N
+                # bytes per (group, n) base with dequant byte order
+                # [0, 2, 1, 3, 4, 6, 5, 7]. nvfp4_marlin_process_scales'
+                # [0, 2, 1, 3] swap produces exactly that layout when the
+                # input is plain (group, n) order, so skip the marlin 2D
+                # scale permutation here.
+                marlin_scales = scales[i].T.contiguous()
+            else:
+                marlin_scales = marlin_permute_scales(
+                    s=scales[i].T,
+                    size_k=size_k,
+                    size_n=size_n,
+                    group_size=GROUP_SIZE,
+                    is_a_8bit=is_a_8bit,
+                )
             marlin_scales, _ = nvfp4_marlin_process_scales(
                 marlin_scales, scale_factor=combined_scale_factor, a_dtype=param_dtype
             )

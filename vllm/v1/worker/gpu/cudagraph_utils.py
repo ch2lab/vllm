@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import gc
 import itertools
+import numpy as np
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from vllm import envs
 from vllm.compilation.breakable_cudagraph import (
     BreakableCUDAGraphWrapper,
     is_breakable_cudagraph_enabled,
@@ -310,6 +312,25 @@ class CudaGraphManager:
                 # For breakable PW graphs, break-point kernels read the real batch
                 # from the forward context; in-graph kernels handle the token padding
                 # themselves from the padded slot_mapping (rows with slot == -1).
+                # SM70 GDN graph: append a decode-shape desc (num_reqs x query_len)
+                # before the relaxed one so it wins candidate matching for
+                # uniform decode batches; the relaxed desc stays for prefill.
+                if (
+                    envs.VLLM_SM70_GDN_GRAPH_DECODE
+                    and mixed_mode == CUDAGraphMode.PIECEWISE
+                    and self.decode_query_len > 1
+                    and num_tokens % self.decode_query_len == 0
+                    and num_tokens // self.decode_query_len <= self.max_num_reqs
+                ):
+                    descs_by_mode[mixed_mode].append(
+                        BatchExecutionDescriptor(
+                            cg_mode=mixed_mode,
+                            num_tokens=num_tokens,
+                            num_reqs=num_tokens // self.decode_query_len,
+                            uniform_token_count=self.decode_query_len,
+                            num_active_loras=num_active_loras,
+                        )
+                    )
                 num_reqs = None
                 if mixed_mode == CUDAGraphMode.FULL:
                     num_reqs = min(num_tokens, self.max_num_reqs)
@@ -449,9 +470,24 @@ class CudaGraphManager:
         """Find matching cudagraph descriptor from priority-ordered candidates."""
 
         effective_loras = self._resolve_effective_loras(num_active_loras)
+        # SM70 GDN graph decode: with the GDN ops absorbed into captured
+        # pieces, a piecewise graph is only valid for the exact batch shape
+        # it was captured with. Prefill/mixed batches must run eager, and
+        # uniform decode batches must replay a decode-shape graph (never a
+        # relaxed, prefill-baked one).
+        gdn_graph_decode = (
+            envs.VLLM_SM70_GDN_GRAPH_DECODE
+            and self.cudagraph_mode.mixed_mode() == CUDAGraphMode.PIECEWISE
+            and self.decode_query_len > 1
+        )
         key = (num_tokens, effective_loras)
         if self._graphs_captured and num_tokens > 0 and key in self._candidates:
             for desc in self._candidates[key]:
+                if gdn_graph_decode and (
+                    uniform_token_count is None
+                    or desc.uniform_token_count != uniform_token_count
+                ):
+                    continue
                 if _is_compatible(
                     desc,
                     num_reqs,
@@ -560,6 +596,13 @@ class ModelCudaGraphManager(CudaGraphManager):
         ) -> Callable[[CUDAGraphMode], None]:
             num_tokens = desc.num_tokens
             num_reqs = desc.num_reqs or min(num_tokens, self.max_num_reqs)
+            # Decode-shape desc: capture with a spec-decode dummy so pieces
+            # bake the decode path (GDN metadata built from draft counts).
+            decode_draft_len = (
+                desc.uniform_token_count - 1
+                if desc.uniform_token_count is not None and desc.num_reqs is not None
+                else None
+            )
 
             # Set LoRA state before capture so kernels see correct adapters.
             if lora_capture_hook is not None:
@@ -594,6 +637,7 @@ class ModelCudaGraphManager(CudaGraphManager):
                 full_cudagraph=desc.cg_mode == CUDAGraphMode.FULL,
                 max_query_len=desc.max_query_len,
                 pcp_manager=pcp_manager,
+                decode_draft_len=decode_draft_len,
             )
 
             # Capture with dummy rows marked as padding.
@@ -602,8 +646,13 @@ class ModelCudaGraphManager(CudaGraphManager):
             def forward_fn(cg_mode: CUDAGraphMode) -> None:
                 batch_descriptor = None
                 if cg_mode == CUDAGraphMode.PIECEWISE:
+                    # Carry num_reqs/uniform through so decode-shape descs
+                    # capture their own piece entries instead of colliding
+                    # with (and replaying) the relaxed desc of the same size.
                     batch_descriptor = BatchDescriptor(
                         num_tokens=num_tokens,
+                        num_reqs=desc.num_reqs,
+                        uniform=desc.uniform_token_count is not None,
                         has_lora=has_lora,
                         num_active_loras=desc.num_active_loras,
                     )
@@ -687,10 +736,18 @@ def prepare_inputs_to_capture(
     full_cudagraph: bool,
     max_query_len: int | None = None,
     pcp_manager: "PCPManager | None" = None,
+    decode_draft_len: int | None = None,
 ) -> AttentionState:
     input_batch = InputBatch.make_dummy(
         num_reqs, num_tokens, input_buffers, max_query_len=max_query_len
     )
+    if decode_draft_len is not None:
+        # Mark every dummy request as a spec-decode row (1 target + drafts)
+        # so attention metadata is built for the decode path, matching the
+        # descriptor the graph is captured under.
+        input_batch.num_draft_tokens_per_req = np.full(
+            num_reqs, decode_draft_len, dtype=np.int32
+        )
     input_block_tables = block_tables.get_dummy_block_tables(num_reqs)
     slot_mapping_provider: BlockTables | PCPManager = block_tables
     if pcp_manager is not None:

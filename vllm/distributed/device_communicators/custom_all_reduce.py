@@ -257,6 +257,12 @@ class CustomAllreduce:
             return
 
         self.disabled = False
+        # When True, force NCCL fallback even during CUDA graph capture.
+        # Used to route a spec-decode drafter's allreduces away from the
+        # custom-AR graph-buffer registration path (which is not
+        # capture-safe for the drafter on SM70) while keeping the fast
+        # custom AR for the main model.
+        self._force_nccl = False
         # Buffers memory are owned by this Python class and passed to C++.
         # Metadata composes of two parts: metadata for synchronization and a
         # temporary buffer for storing intermediate allreduce results.
@@ -403,7 +409,7 @@ class CustomAllreduce:
         ops.register_graph_buffers(self._ptr, handles, offsets)
 
     def should_custom_ar(self, inp: torch.Tensor):
-        if self.disabled or self.world_size > 8:
+        if self._force_nccl or self.disabled or self.world_size > 8:
             return False
         if inp.dtype not in (torch.float32, torch.float16, torch.bfloat16):
             return False

@@ -29,6 +29,13 @@ def sm70_splitd_admit(
     Phase 1 admits a single prefill request per step (the paged op consumes
     one block-table row); multi-request prefill steps fall back to FA2.
 
+    Small ``q_len`` (spec-decode verification, q_len = num_spec_tokens + 1)
+    is rejected: the 64-row tile wastes 58/64 rows of MMA work, and the
+    staged fp16 read measures ~2 GB/s effective at long context, while the
+    FA2 shadow path's SM70PAGED kernel stays near its 52K->260K floor
+    (~20 ms KV attention). The shadow workspace is already allocated for
+    prefill chunks, so rejecting small-q adds no new allocation.
+
     Args:
         num_prefills: prefill requests in this step.
         q_len: this request's prefill query length for the step.

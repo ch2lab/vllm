@@ -440,7 +440,10 @@ def fused_recurrent_gated_delta_rule_packed_decode(
         )
     BV = min(triton.next_power_of_2(V), 32)
     num_stages = 3
-    num_warps = 1
+    # 1 warp (32 threads) carried the full [BV, BK] state tile in registers
+    # (128 floats/thread -> ~220 regs, spilling) at ~2% occupancy; 4 warps
+    # split the tile 4x and cut per-thread state to 32 floats.
+    num_warps = 4
 
     stride_mixed_qkv_tok = mixed_qkv.stride(0)
     stride_a_tok = a.stride(0)

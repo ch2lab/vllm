@@ -78,11 +78,20 @@ class Sm70NvFp4LinearKernel(NvFp4LinearKernel):
         m = a.shape[0]
         n_gemm = getattr(layer, "_sm70_nvfp4_padded_n", n)
         c = torch.empty(m, n_gemm, dtype=torch.float16, device=a.device)
+        # Per-shape QPN2 template (microbench 2026-09-21, m=1): small-N GEMMs
+        # (few CTAs) gain from SplitK=16 (16-warp block), nacc=2 pipelines
+        # the mma chains; large-N GEMMs are best at 8/1. Grid-z K-split
+        # (VLLM_SM70_QPN2_KSPLIT) measured regressive on all shapes — leave
+        # off.
+        if n_gemm <= 5120 and (k // 16) % 16 == 0:
+            split_k, nacc = 16, (2 if k <= 5120 else 1)
+        else:
+            split_k, nacc = 8, 1
         gemm_dispatch(
             c, a,
             layer._sm70_qpn2_codes, layer._sm70_qpn2_scales,
             layer._sm70_qpn2_global_scale,
-            8, 1)
+            split_k, nacc)
         if n_gemm != n:
             c = c[:, :n]
         if bias is not None:

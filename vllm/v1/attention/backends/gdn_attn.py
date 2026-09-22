@@ -7,6 +7,7 @@ from typing import Literal
 
 import torch
 
+from vllm import envs
 from vllm.config import VllmConfig
 from vllm.utils.torch_utils import async_tensor_h2d
 from vllm.v1.attention.backend import (
@@ -112,6 +113,17 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
 
         self.use_full_cuda_graph: bool = (
             self.compilation_config.cudagraph_mode.has_full_cudagraphs()
+        )
+        # Decode metadata can be served from fixed graph buffers under any
+        # cudagraph mode (FULL or PIECEWISE), letting the GDN decode custom op
+        # be captured into the graph instead of breaking out to eager Python
+        # every step. Gated so the legacy eager path stays available.
+        self.use_decode_cudagraph: bool = (
+            bool(envs.VLLM_SM70_GDN_GRAPH)
+            and (
+                self.use_full_cuda_graph
+                or self.compilation_config.cudagraph_mode.has_piecewise_cudagraphs()
+            )
         )
 
         self.decode_cudagraph_max_bs: int = (
@@ -241,10 +253,30 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 num_spec_decodes = 0
                 spec_sequence_masks = None
                 spec_sequence_masks_cpu = None
+                all_spec = False
             else:
-                spec_sequence_masks = async_tensor_h2d(
-                    spec_sequence_masks_cpu, device=query_start_loc.device
+                # Hostopt: steady-state all-spec batch — every row is a
+                # spec-decode row, so the static pieces below are served
+                # from cached buffers / leading views instead of per-step
+                # H2D/arange/gather.
+                all_spec = (
+                    envs.VLLM_SM70_GDN_HOSTOPT
+                    and num_spec_decodes == spec_sequence_masks_cpu.size(0)
                 )
+                if all_spec:
+                    if getattr(self, "_hostopt_masks", None) is None or (
+                        self._hostopt_masks.size(0) < num_spec_decodes
+                    ):
+                        self._hostopt_masks = torch.ones(
+                            max(num_spec_decodes, 8),
+                            dtype=torch.bool,
+                            device=query_start_loc.device,
+                        )
+                    spec_sequence_masks = self._hostopt_masks
+                else:
+                    spec_sequence_masks = async_tensor_h2d(
+                        spec_sequence_masks_cpu, device=query_start_loc.device
+                    )
 
         if spec_sequence_masks is None:
             num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
@@ -260,7 +292,11 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             non_spec_query_start_loc_cpu = query_start_loc_cpu
             num_accepted_tokens = None
         else:
-            query_lens = query_start_loc[1:] - query_start_loc[:-1]
+            query_lens = (
+                None
+                if all_spec
+                else query_start_loc[1:] - query_start_loc[:-1]
+            )
             assert spec_sequence_masks_cpu is not None
             non_spec_sequence_masks_cpu = ~spec_sequence_masks_cpu
             query_lens_cpu = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
@@ -294,18 +330,40 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                     num_spec_decodes * (self.num_spec + 1),
                     query_start_loc_cpu[-1].item(),
                 )
-                spec_token_indx = torch.arange(
-                    spec_token_size,
-                    dtype=torch.int32,
-                    device=query_start_loc.device,
-                )
-                non_spec_token_indx = torch.empty(
-                    0, dtype=torch.int32, device=query_start_loc.device
-                )
-                # Filter by spec_sequence_masks to exclude padded sequences
-                spec_state_indices_tensor = block_table_tensor[
-                    spec_sequence_masks_cpu, : self.num_spec + 1
-                ]
+                if all_spec:
+                    caches = getattr(self, "_hostopt_token_caches", None)
+                    if caches is None or caches[0].size(0) < spec_token_size:
+                        caches = (
+                            torch.arange(
+                                spec_token_size,
+                                dtype=torch.int32,
+                                device=query_start_loc.device,
+                            ),
+                            torch.empty(
+                                0, dtype=torch.int32, device=query_start_loc.device
+                            ),
+                        )
+                        self._hostopt_token_caches = caches
+                    spec_token_indx = caches[0][:spec_token_size]
+                    non_spec_token_indx = caches[1]
+                    # All rows are spec rows (padded ones trail, if any),
+                    # so the leading slice of the block table is a view.
+                    spec_state_indices_tensor = block_table_tensor[
+                        :num_spec_decodes, : self.num_spec + 1
+                    ]
+                else:
+                    spec_token_indx = torch.arange(
+                        spec_token_size,
+                        dtype=torch.int32,
+                        device=query_start_loc.device,
+                    )
+                    non_spec_token_indx = torch.empty(
+                        0, dtype=torch.int32, device=query_start_loc.device
+                    )
+                    # Filter by spec_sequence_masks to exclude padded sequences
+                    spec_state_indices_tensor = block_table_tensor[
+                        spec_sequence_masks_cpu, : self.num_spec + 1
+                    ]
                 non_spec_state_indices_tensor = None
                 # Padded sequences are always at the back, so the first
                 # num_spec_decodes + 1 entries of query_start_loc already
@@ -362,7 +420,11 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 )
 
             assert num_accepted_tokens is not None
-            num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
+            if all_spec:
+                # The all-True mask selects the whole batch: leading view.
+                num_accepted_tokens = num_accepted_tokens[:num_spec_decodes]
+            else:
+                num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
 
         chunk_indices: torch.Tensor | None = None
         chunk_offsets: torch.Tensor | None = None
@@ -427,7 +489,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         batch_size = m.num_reqs
 
         if (
-            self.use_full_cuda_graph
+            self.use_decode_cudagraph
             and num_prefills == 0
             and num_decodes == 0
             and num_spec_decodes <= self.decode_cudagraph_max_bs
@@ -462,7 +524,12 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             self.spec_query_start_loc[: num_spec_decodes + 1].copy_(
                 spec_query_start_loc, non_blocking=True
             )
-            spec_num_query_tokens = spec_query_start_loc[-1]  # type: ignore[index]
+            if all_spec:
+                # Total spec query tokens is the CPU-known arange length;
+                # avoids a GPU scalar index + sync.
+                spec_num_query_tokens = spec_token_size
+            else:
+                spec_num_query_tokens = spec_query_start_loc[-1]  # type: ignore[index]
             spec_query_start_loc = self.spec_query_start_loc[: batch_size + 1]
             spec_query_start_loc[num_spec_decodes + 1 :].fill_(spec_num_query_tokens)
 
@@ -473,7 +540,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             num_accepted_tokens[num_spec_decodes:].fill_(1)
 
         if (
-            self.use_full_cuda_graph
+            self.use_decode_cudagraph
             and num_prefills == 0
             and num_spec_decodes == 0
             and num_decodes <= self.decode_cudagraph_max_bs

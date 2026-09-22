@@ -1261,6 +1261,30 @@ class CompilationConfig:
             )
             self.cudagraph_mode = CUDAGraphMode.NONE
 
+        # SM70: absorb the GDN ops into piecewise cudagraph pieces.
+        # Normally a GDN op anchors a piece that runs eager Python every
+        # step; with VLLM_SM70_GDN_FILTER_SPLIT the GDN ops stop anchoring
+        # pieces and run inside the compiled/captured pieces instead.
+        # Keep off until the in-piece capture path is verified stable.
+        if (
+            envs.VLLM_SM70_GDN_FILTER_SPLIT
+            and self.cudagraph_mode.has_piecewise_cudagraphs()
+            and self.splitting_ops
+        ):
+            _gdn_splitting_ops = {
+                "vllm::qwen_gdn_attention_core",
+                "vllm::qwen_gdn_attention_core_fused_norm_packed",
+            }
+            filtered_ops = [op for op in self.splitting_ops if op not in _gdn_splitting_ops]
+            if len(filtered_ops) != len(self.splitting_ops):
+                logger.info(
+                    "VLLM_SM70_GDN_FILTER_SPLIT: removed %d GDN op(s) from "
+                    "splitting_ops (%d remain)",
+                    len(self.splitting_ops) - len(filtered_ops),
+                    len(filtered_ops),
+                )
+                self.splitting_ops = filtered_ops
+
     def set_splitting_ops_for_attn_fusion(self):
         assert self.pass_config.fuse_attn_quant
         if self.splitting_ops is None:
@@ -1282,9 +1306,19 @@ class CompilationConfig:
         )
 
     def splitting_ops_contain_attention(self) -> bool:
-        return self.splitting_ops is not None and all(
-            op in self.splitting_ops for op in self._attention_ops
-        )
+        if self.splitting_ops is None:
+            return False
+        ops = list(self._attention_ops)
+        # SM70 GDN graph: the GDN ops are intentionally removed from
+        # splitting_ops (see set_splitting_ops_for_v1); the remaining
+        # attention ops are the piecewise anchors.
+        if envs.VLLM_SM70_GDN_FILTER_SPLIT:
+            _gdn_ops = {
+                "vllm::qwen_gdn_attention_core",
+                "vllm::qwen_gdn_attention_core_fused_norm_packed",
+            }
+            ops = [op for op in ops if op not in _gdn_ops]
+        return all(op in self.splitting_ops for op in ops)
 
     def splitting_ops_contain_kv_cache_update(self) -> bool:
         # when using Dynamo partition while splitting ops is None
