@@ -804,6 +804,9 @@ class FIDecode:
     """SM70 NVFP4 graph decode: device int32 ``[num_reqs]`` KV lengths."""
     shadow_num_reqs: int = 0
     """SM70 NVFP4: decode batch size (requests, fixed per captured graph)."""
+    seq_lens_source: torch.Tensor | None = None
+    """SM70 NVFP4: device seq_lens tensor this step's kv-lens were built
+    from; update_draft_decode_metadata re-reads it between draft steps."""
     shadow_splits: int = 0
     """SM70 NVFP4: split-KV count for the decode (fixed per captured graph)."""
     shadow_ws: torch.Tensor | None = None
@@ -1415,6 +1418,35 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                 self._sm70_kvlens_dev = torch.zeros(
                     max_num_reqs, dtype=torch.int32, device=self.device
                 )
+
+        # SM70 NVFP4 shadow decode keeps all per-step state device-side
+        # (kv lens buffer + static block table), so draft steps can refresh
+        # it in place instead of rebuilding metadata per step.
+        self.supports_draft_decode_metadata_update = (
+            self.sm70_nvfp4_shadow
+            and not self.use_dcp
+            and not self.use_trtllm_decode_attention
+        )
+
+    def update_draft_decode_metadata(self, metadata: FlashInferMetadata) -> None:
+        decode = metadata.decode
+        if (
+            decode is None
+            or decode.seq_lens_source is None
+            or decode.shadow_kv_lens_dev is None
+        ):
+            return
+        n = decode.shadow_num_reqs
+        # input_buffers.seq_lens is advanced GPU-side between draft steps;
+        # mirror it into the kv-lens the kernels read. For the graph-backed
+        # builder that is the static capture buffer (D2D refresh keeps the
+        # captured pointer); otherwise swap in a fresh device slice cast.
+        if hasattr(self, "_sm70_kvlens_dev"):
+            self._sm70_kvlens_dev[:n].copy_(decode.seq_lens_source[:n])
+        else:
+            decode.shadow_kv_lens_dev = decode.seq_lens_source[:n].to(
+                torch.int32
+            )
 
     @property
     def kv_cache_layout(self) -> KVCacheLayout:
@@ -2850,6 +2882,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                         shadow_num_reqs=num_input_tokens,
                         shadow_splits=splits,
                         shadow_ws=self._sm70_ws,
+                        seq_lens_source=common_attn_metadata.seq_lens,
                     )
                 else:
                     fast_plan_decode(
