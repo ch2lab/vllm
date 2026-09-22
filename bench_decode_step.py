@@ -72,7 +72,7 @@ def stream_chat(body):
 
 stream_chat("hi")
 print("warmup done", flush=True)
-print(f"{'ctx':>8} {'gen':>5} {'pref_s':>8} {'tps':>7} {'tok/step':>8} {'acc':>6} {'ms/step':>8}", flush=True)
+print(f"{'ctx':>8} {'gen':>5} {'pref_s':>8} {'tps':>7} {'tok/step':>8} {'acc':>6} {'ms/step':>8}", flush=True)  # tps=true tokens/s (usage-based)
 for i, C in enumerate([8192, 16384, 32768, 65536, 131072]):
     body = body_for_tok(C, seed=7000 + i * 131)
     m0 = get("spec_decode")
@@ -80,13 +80,16 @@ for i, C in enumerate([8192, 16384, 32768, 65536, 131072]):
     ntok, times, usage = stream_chat(body)
     m1 = get("spec_decode")
     ctx = usage.get("prompt_tokens", C)
+    # SSE deltas batch multiple accepted tokens per step under spec decode;
+    # count from usage.completion_tokens so tok/s is true token throughput.
+    ntok_real = usage.get("completion_tokens") or ntok
     drafts = m1.get("vllm:spec_decode_num_drafts_total", 0) - m0.get("vllm:spec_decode_num_drafts_total", 0)
     dtok = m1.get("vllm:spec_decode_num_draft_tokens_total", 0) - m0.get("vllm:spec_decode_num_draft_tokens_total", 0)
     atok = m1.get("vllm:spec_decode_num_accepted_tokens_total", 0) - m0.get("vllm:spec_decode_num_accepted_tokens_total", 0)
     # steps ~= drafts (1 draft per step) ; tokens out = 1 + accepted per step
     steps = max(drafts, 1)
-    tps = (ntok - 1) / (times[-1] - times[0]) if len(times) >= 2 else 0
-    tok_step = ntok / steps
+    tps = (ntok_real - 1) / (times[-1] - times[0]) if len(times) >= 2 else 0
+    tok_step = ntok_real / steps
     ms_step = (times[-1] - times[0]) * 1e3 / steps if len(times) >= 2 else 0
     acc = atok / dtok if dtok else 0
     print(f"{ctx:>8} {ntok:>5} {times[0]-t0:>8.1f} {tps:>7.2f} {tok_step:>8.2f} {acc:>6.3f} {ms_step:>8.1f}", flush=True)
