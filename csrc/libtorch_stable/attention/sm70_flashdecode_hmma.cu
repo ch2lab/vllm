@@ -35,6 +35,12 @@ constexpr int kPartWarps = kRatio;
 constexpr int kLaneDims = 8;
 constexpr int kRowStride = kD + 2;
 constexpr int kDChunks = 4;                     // 64-dim chunks
+// Merged-verify: for 2 <= q_rows <= kMergedMaxQ ONE CTA computes every
+// (qq, head) score as a gemm M-row (q_rows * kRatio <= 24 rows = kMtiles
+// tiles of 8), so the KV chunk is staged/dequantized once per split
+// instead of once per row (production MTP3 verify = 4x less KV traffic).
+constexpr int kMergedMaxQ = 4;
+constexpr int kMtiles = 3;                      // ceil(4*6 / 8)
 
 using SmemTileAtom = decltype(composition(
     Swizzle<3, 3, 3>{},
@@ -70,8 +76,9 @@ __device__ __forceinline__ float e4m3_to_float(unsigned char b) {
   return sgn ? -v : v;
 }
 
-__global__ void __launch_bounds__(kPartMaxThreads, 4)
-sm70_flashdecode_hmma_partition_kernel(
+template <bool MERGED>
+__global__ void __launch_bounds__(kPartMaxThreads, MERGED ? 3 : 4)
+sm70_fd_hmma_partition_kernel_impl(
     const __half* __restrict__ q,
     const uint8_t* __restrict__ kv,
     const int* __restrict__ bt,
@@ -80,24 +87,26 @@ sm70_flashdecode_hmma_partition_kernel(
     float k_scale, float v_scale, float sm_scale,
     int window_left, int splits, int q_rows, int bt_cols, int n_page,
     int64_t page_stride, int64_t side_off) {
-  const int r = blockIdx.z / q_rows;
-  const int qq = blockIdx.z % q_rows;
+  const int zrows = MERGED ? 1 : q_rows;
+  const int r = blockIdx.z / zrows;
+  const int qq0 = MERGED ? 0 : blockIdx.z % q_rows;
+  const int nrows = MERGED ? q_rows : 1;
   const int h = blockIdx.y;
   const int sp = blockIdx.x;
   const int tid = threadIdx.x;
   const int warp = tid >> 5;
   const int lane = tid & 31;
 
-  // 8 rows so the (8,x) gemm A-operand row 7 lands inside the allocation
-  // (its outputs are discarded; only kRatio rows carry real heads).
-  __shared__ __half q_smem[kMaxQ * kD];             // 4 KB, this row
-  __shared__ uint8_t kv_raw[kN * kF];                  // 2.3 KB V packed
-  __shared__ __half k_tile_storage_full[kN * kD];    // 8 KB (gemm operand)
-  // Score partials: gemm warp g computes S[8 heads x 16 tok] for dim chunk
-  // g (M-rows = the 6 head q-vectors + 2 zero pad rows, a real GEMM slice,
-  // not a stride-0 broadcast); softmax sums the kDChunks partials per head
-  // row. kMaxQ rows per chunk because the C-tile is 8 rows tall.
-  __shared__ float s_shA[kDChunks][kMaxQ][kN];
+  // M-rows are (qq, head) pairs flattened as i = qq*kRatio + head; one
+  // gemm tile per 8 rows. !MERGED: i == head (rows 6..7 zero pad).
+  constexpr int kSmemRows = MERGED ? kMtiles * 8 : 8;
+  __shared__ __half q_smem[kSmemRows * kD];     // 12 KB merged, 4 KB plain
+  __shared__ uint8_t kv_raw[kN * kF];           // 2.3 KB V packed
+  __shared__ __half k_tile_storage_full[kN * kD];   // 8 KB (gemm operand)
+  // Score slabs: MERGED = one fully-accumulated slab per M tile (tiles
+  // 0..2); !MERGED = one partial per dim chunk for the single tile
+  // (softmax sums the 4). Same [kDChunks][8][kN] bytes serve both.
+  __shared__ float s_sc[kDChunks][8][kN];
   // v3h-style dequant tables: e2t[byte] = the 2 nibble magnitudes,
   // e4t[side*256+byte] = e4m3 value x layer scale (exact in fp32).
   __shared__ float2 e2t[256];
@@ -112,9 +121,10 @@ sm70_flashdecode_hmma_partition_kernel(
   const int64_t ws_base =
       ((int64_t)(r * kH + h) * splits + sp) * ws_sp;
 
-  float* slot = ws + ws_base + qq * (kRatio * kRowStride);
+  float* slot = ws + ws_base + qq0 * (kRatio * kRowStride);
   auto write_empty = [&]() {
-    for (int idx = tid; idx < kRatio * kRowStride; idx += kPartMaxThreads) {
+    for (int idx = tid; idx < nrows * kRatio * kRowStride;
+         idx += kPartMaxThreads) {
       const int rem = idx % kRowStride;
       slot[idx] = (rem == kD) ? -INFINITY
                 : (rem == kD + 1) ? 0.0f : 0.0f;
@@ -131,19 +141,27 @@ sm70_flashdecode_hmma_partition_kernel(
   if (t_a >= t_b) return;
   const int c0 = (int)(t_a / kN);
   const int c1 = (int)((t_b - 1) / kN);
-  const int hi = kv_len - q_rows + qq + 1;
+  constexpr int KNR = MERGED ? kMergedMaxQ : 1;
+  int hi_row[KNR];
+#pragma unroll
+  for (int qi = 0; qi < KNR; qi++) {
+    hi_row[qi] = (qi < nrows) ? kv_len - q_rows + qq0 + qi + 1 : 0;
+  }
 
-  // ---- Q into smem once (this row, 6 heads), sm_scale folded ----
+  // ---- Q into smem once (all owned rows; zero pads, sm_scale folded) ----
   {
+    const int nq = nrows * kRatio;
     const __half* src =
-        q + ((int64_t)(r * q_rows + qq) * kHQ + h * kRatio) * kD;
-    for (int idx = tid; idx < kMaxQ * kD / 2; idx += kPartMaxThreads) {
+        q + ((int64_t)(r * q_rows + qq0) * kHQ + h * kRatio) * kD;
+    for (int idx = tid; idx < kSmemRows * kD / 2;
+         idx += kPartMaxThreads) {
       const int t = idx / (kD / 2);
       const int d2 = (idx % (kD / 2)) * 2;
       const __half2 s = __float2half2_rn(sm_scale);
-      const __half2 v = (t < kRatio)
-          ? *reinterpret_cast<const __half2*>(src + t * kD + d2)
-          : __half2();  // padded M-rows: zeros, outputs discarded
+      const __half2 v = (t < nq)
+          ? *reinterpret_cast<const __half2*>(
+                src + (t / kRatio) * (kHQ * kD) + (t % kRatio) * kD + d2)
+          : __half2();
       reinterpret_cast<__half2*>(&q_smem[0])[idx] = __hmul2(v, s);
     }
     for (int b = tid; b < 256; b += kPartMaxThreads) {
@@ -155,16 +173,19 @@ sm70_flashdecode_hmma_partition_kernel(
   }
   __syncthreads();
 
-  // ---- gemm setup: A = q_smem as [8 head-rows, 256]; one gemm warp per
-  // 64-dim chunk.
+  // ---- gemm setup: A tile t = q_smem rows 8t..8t+7 ----
   FmTiled tiled_mma;
-  const int lane_w = tid & 31;
-  auto thr_mma = tiled_mma.get_thread_slice(lane_w);
+  auto thr_mma = tiled_mma.get_thread_slice(lane);
   const int d_base = kLaneDims * lane;
-  float acc[kLaneDims];
+  float acc[KNR][kLaneDims];
+  float m_run[KNR], l_run[KNR];
 #pragma unroll
-  for (int j = 0; j < kLaneDims; j++) acc[j] = 0.0f;
-  float m_run = -INFINITY, l_run = 0.0f;
+  for (int qi = 0; qi < KNR; qi++) {
+    m_run[qi] = -INFINITY;
+    l_run[qi] = 0.0f;
+#pragma unroll
+    for (int j = 0; j < kLaneDims; j++) acc[qi][j] = 0.0f;
+  }
 
   for (int c = c0; c <= c1; c++) {
     const int cbase = c * kN;
@@ -172,9 +193,7 @@ sm70_flashdecode_hmma_partition_kernel(
     const int n0_in = cbase - blk * n_page;
     const int64_t base =
         (int64_t)__ldg(bt + r * bt_cols + blk) * page_stride;
-    // ---- V: packed bytes -> smem (PV reads it in place below). K is
-    // dequantized straight from global into the fp16 tile in the next
-    // loop, so it needs no smem staging round-trip.
+    // ---- V: packed bytes -> smem (PV reads it in place below) ----
     for (int cc = tid; cc < kN * (kF / 16); cc += kPartMaxThreads) {
       const int n = cc / (kF / 16);
       const int f16 = cc % (kF / 16);
@@ -220,81 +239,146 @@ sm70_flashdecode_hmma_partition_kernel(
       }
     }
     __syncthreads();
-    // ---- score gemm: warp g < kDChunks computes S[8 heads x 16 tok] for
-    // dim chunk g (M-rows = 6 head q-vectors + 2 zero pad rows) ----
-    if (warp < kDChunks) {
-      auto accT = thr_mma.partition_C(make_tensor(
-          make_gmem_ptr(&s_shA[warp][0][0]),
-          make_shape(_8{}, Int<kN>{}), make_stride(Int<kN>{}, _1{})));
-      auto rAcc = thr_mma.make_fragment_C(accT);
-      clear(rAcc);
-      auto sKc = cute::local_tile(sK, make_shape(_16{}, _64{}),
-                                  make_coord(0, warp));
-      auto gB = thr_mma.partition_B(sKc);
-      auto rK = thr_mma.make_fragment_B(gB);
-      copy(gB, rK);
-      auto mA_chunk = make_tensor(
-          make_gmem_ptr(reinterpret_cast<const half_t*>(
-              &q_smem[warp * 64])),
-          make_shape(_8{}, _64{}), make_stride(Int<kD>{}, _1{}));
-      auto rQc = thr_mma.make_fragment_A(thr_mma.partition_A(mA_chunk));
-      copy(thr_mma.partition_A(mA_chunk), rQc);
-      gemm(tiled_mma, rQc, rK, rAcc);
-      copy(rAcc, accT);
+    // ---- score gemm ----
+    if constexpr (MERGED) {
+      // warp g < kMtiles: M tile g over all dim chunks (accumulated in
+      // registers, one full slab published).
+      if (warp < kMtiles) {
+        auto accT = thr_mma.partition_C(make_tensor(
+            make_gmem_ptr(&s_sc[warp][0][0]),
+            make_shape(_8{}, Int<kN>{}), make_stride(Int<kN>{}, _1{})));
+        auto rAcc = thr_mma.make_fragment_C(accT);
+        clear(rAcc);
+#pragma unroll
+        for (int dc = 0; dc < kDChunks; dc++) {
+          auto sKc = cute::local_tile(sK, make_shape(_16{}, _64{}),
+                                      make_coord(0, dc));
+          auto gB = thr_mma.partition_B(sKc);
+          auto rK = thr_mma.make_fragment_B(gB);
+          copy(gB, rK);
+          auto mA = make_tensor(
+              make_gmem_ptr(reinterpret_cast<const half_t*>(
+                  &q_smem[warp * 8 * kD + dc * 64])),
+              make_shape(_8{}, _64{}), make_stride(Int<kD>{}, _1{}));
+          auto rQ = thr_mma.make_fragment_A(thr_mma.partition_A(mA));
+          copy(thr_mma.partition_A(mA), rQ);
+          gemm(tiled_mma, rQ, rK, rAcc);
+        }
+        copy(rAcc, accT);
+      }
+    } else {
+      // single row: warp g < kDChunks computes dim-chunk g as a partial
+      // slab over the kRatio head rows.
+      if (warp < kDChunks) {
+        auto accT = thr_mma.partition_C(make_tensor(
+            make_gmem_ptr(&s_sc[warp][0][0]),
+            make_shape(_8{}, Int<kN>{}), make_stride(Int<kN>{}, _1{})));
+        auto rAcc = thr_mma.make_fragment_C(accT);
+        clear(rAcc);
+        auto sKc = cute::local_tile(sK, make_shape(_16{}, _64{}),
+                                    make_coord(0, warp));
+        auto gB = thr_mma.partition_B(sKc);
+        auto rK = thr_mma.make_fragment_B(gB);
+        copy(gB, rK);
+        auto mA = make_tensor(
+            make_gmem_ptr(reinterpret_cast<const half_t*>(
+                &q_smem[0] + warp * 64)),
+            make_shape(_8{}, _64{}), make_stride(Int<kD>{}, _1{}));
+        auto rQ = thr_mma.make_fragment_A(thr_mma.partition_A(mA));
+        copy(thr_mma.partition_A(mA), rQ);
+        gemm(tiled_mma, rQ, rK, rAcc);
+        copy(rAcc, accT);
+      }
     }
     __syncthreads();
-    // ---- softmax + PV over this chunk's 16 scores (head = warp) ----
+    // ---- softmax + PV: warp = head; each row qq shares this CTA's KV ----
     const int rt0 = cbase > (int)t_a ? 0 : (int)(t_a - cbase);
     const int rt1p = cbase + kN < (int)t_b ? kN : (int)(t_b - cbase);
-    int rt1 = rt1p;
-    if (cbase + rt1 > hi) rt1 = hi - cbase;
-    if (rt1 > kN) rt1 = kN;
-    if (rt1 > rt0) {
-      const float* p0 = &s_shA[0][warp][0];
-      const float* p1 = &s_shA[1][warp][0];
-      const float* p2 = &s_shA[2][warp][0];
-      const float* p3 = &s_shA[3][warp][0];
-      float m_tile = -INFINITY;
-      for (int t = rt0; t < rt1; t++)
-        m_tile = fmaxf(m_tile, (p0[t] + p1[t]) + (p2[t] + p3[t]));
-      const float m_new = fmaxf(m_run, m_tile);
-      const float alpha = (m_run == -INFINITY) ? 0.0f
-                        : expf(m_run - m_new);
-      l_run *= alpha;
+    int rt1_q[KNR];
+    float m_new_q[KNR];
+    int rt1w = rt0;
 #pragma unroll
-      for (int j = 0; j < kLaneDims; j++) acc[j] *= alpha;
-      m_run = m_new;
-      for (int t = rt0; t < rt1; t++) {
-        const float p = expf((p0[t] + p1[t]) + (p2[t] + p3[t]) - m_new);
-        l_run += p;
-        // PV from raw bytes: this lane's 8 dims = 4 contiguous packed bytes
-        // sharing one scale group.
+    for (int qi = 0; qi < KNR; qi++) {
+      int rt1 = rt1p;
+      if (qi < nrows) {
+        const int hh = hi_row[qi] - cbase;
+        if (rt1 > hh) rt1 = hh;
+        if (rt1 > kN) rt1 = kN;
+        if (rt1 < rt0) rt1 = rt0;
+        if (rt1 > rt1w) rt1w = rt1;
+        if (rt1 > rt0) {
+          const int irow = qi * kRatio + warp;
+          const float* sc = &s_sc[MERGED ? irow / 8 : 0][irow % 8][0];
+          float m_tile = -INFINITY;
+          for (int t = rt0; t < rt1; t++) {
+            float s = sc[t];
+            if constexpr (!MERGED) {
+              s = (s_sc[0][irow][t] + s_sc[1][irow][t]) +
+                  (s_sc[2][irow][t] + s_sc[3][irow][t]);
+            }
+            m_tile = fmaxf(m_tile, s);
+          }
+          const float mn = fmaxf(m_run[qi], m_tile);
+          const float alpha = (m_run[qi] == -INFINITY) ? 0.0f
+                            : expf(m_run[qi] - mn);
+          l_run[qi] *= alpha;
+#pragma unroll
+          for (int j = 0; j < kLaneDims; j++) acc[qi][j] *= alpha;
+          m_run[qi] = mn;
+          m_new_q[qi] = mn;
+        }
+      }
+      rt1_q[qi] = rt1;
+    }
+    if (rt1w > rt0) {
+      for (int t = rt0; t < rt1w; t++) {
+        // one V byte read shared by all rows of this token
         const uint32_t vb4 = *reinterpret_cast<const uint32_t*>(
             &kv_raw[t * kF + (d_base >> 1)]);
         const float sf = e4t[256 + kv_raw[t * kF + kDD + (d_base >> 4)]];
         const float2 v01 = e2t[vb4 & 0xFF], v23 = e2t[(vb4 >> 8) & 0xFF];
         const float2 v45 = e2t[(vb4 >> 16) & 0xFF], v67 = e2t[vb4 >> 24];
-        acc[0] = fmaf(p * sf, v01.x, acc[0]);
-        acc[1] = fmaf(p * sf, v01.y, acc[1]);
-        acc[2] = fmaf(p * sf, v23.x, acc[2]);
-        acc[3] = fmaf(p * sf, v23.y, acc[3]);
-        acc[4] = fmaf(p * sf, v45.x, acc[4]);
-        acc[5] = fmaf(p * sf, v45.y, acc[5]);
-        acc[6] = fmaf(p * sf, v67.x, acc[6]);
-        acc[7] = fmaf(p * sf, v67.y, acc[7]);
+#pragma unroll
+        for (int qi = 0; qi < KNR; qi++) {
+          if (qi < nrows && t < rt1_q[qi]) {
+            const int irow = qi * kRatio + warp;
+            const float* sc = &s_sc[MERGED ? irow / 8 : 0][irow % 8][0];
+            float s = sc[t];
+            if constexpr (!MERGED) {
+              s = (s_sc[0][irow][t] + s_sc[1][irow][t]) +
+                  (s_sc[2][irow][t] + s_sc[3][irow][t]);
+            }
+            const float pe = expf(s - m_new_q[qi]);
+            l_run[qi] += pe;
+            const float p = pe * sf;
+            acc[qi][0] = fmaf(p, v01.x, acc[qi][0]);
+            acc[qi][1] = fmaf(p, v01.y, acc[qi][1]);
+            acc[qi][2] = fmaf(p, v23.x, acc[qi][2]);
+            acc[qi][3] = fmaf(p, v23.y, acc[qi][3]);
+            acc[qi][4] = fmaf(p, v45.x, acc[qi][4]);
+            acc[qi][5] = fmaf(p, v45.y, acc[qi][5]);
+            acc[qi][6] = fmaf(p, v67.x, acc[qi][6]);
+            acc[qi][7] = fmaf(p, v67.y, acc[qi][7]);
+          }
+        }
       }
     }
-    __syncthreads();   // tiles reuse next chunk
+    __syncthreads();   // slabs/tiles reused next chunk
   }
 
-  // ---- direct write of this split's partial (single writer per slot) ----
-  {
-    float* rp = slot + warp * kRowStride + d_base;
+  // ---- direct write of this split's partials (one slot per row) ----
 #pragma unroll
-    for (int j = 0; j < kLaneDims; j++) rp[j] = acc[j];
-    if (lane == 0) {
-      slot[warp * kRowStride + kD] = m_run;
-      slot[warp * kRowStride + kD + 1] = l_run;
+  for (int qi = 0; qi < KNR; qi++) {
+    if (qi < nrows) {
+      float* rp = slot + qi * (kRatio * kRowStride) +
+                  warp * kRowStride + d_base;
+#pragma unroll
+      for (int j = 0; j < kLaneDims; j++) rp[j] = acc[qi][j];
+      if (lane == 0) {
+        float* rs = rp - d_base;
+        rs[kD] = m_run[qi];
+        rs[kD + 1] = l_run[qi];
+      }
     }
   }
 }
@@ -444,19 +528,28 @@ void sm70_flashdecode_hmma(torch::stable::Tensor& q, torch::stable::Tensor& kv,
 
   cudaStream_t stream = get_current_cuda_stream(q.get_device_index());
 
-  dim3 grid(splits, kH, R * q_rows);  // v3h: per-row CTA grid
+  const bool merged = q_rows >= 2 && q_rows <= kMergedMaxQ;
+  dim3 grid(splits, kH, R * (merged ? 1 : q_rows));
   dim3 block(kRatio * 32);
-  sm70_flashdecode_hmma_partition_kernel<<<grid, block, 0, stream>>>(
-      reinterpret_cast<const __half*>(q.data_ptr()),
-      reinterpret_cast<const uint8_t*>(kv.data_ptr()),
-      reinterpret_cast<const int*>(block_table.data_ptr()),
-      reinterpret_cast<const int*>(kv_lens.data_ptr()),
-      reinterpret_cast<float*>(workspace.data_ptr()),
-      static_cast<float>(k_scale), static_cast<float>(v_scale),
-      static_cast<float>(sm_scale), static_cast<int>(window_left),
-      static_cast<int>(splits), static_cast<int>(q_rows),
-      static_cast<int>(bt_cols), static_cast<int>(n_page), kv.stride(0),
-      (int64_t)H * n_page * kF);
+#define FD_ARGS \
+      reinterpret_cast<const __half*>(q.data_ptr()), \
+      reinterpret_cast<const uint8_t*>(kv.data_ptr()), \
+      reinterpret_cast<const int*>(block_table.data_ptr()), \
+      reinterpret_cast<const int*>(kv_lens.data_ptr()), \
+      reinterpret_cast<float*>(workspace.data_ptr()), \
+      static_cast<float>(k_scale), static_cast<float>(v_scale), \
+      static_cast<float>(sm_scale), static_cast<int>(window_left), \
+      static_cast<int>(splits), static_cast<int>(q_rows), \
+      static_cast<int>(bt_cols), static_cast<int>(n_page), kv.stride(0), \
+      (int64_t)H * n_page * kF
+  if (merged) {
+    sm70_fd_hmma_partition_kernel_impl<true><<<grid, block, 0, stream>>>(
+        FD_ARGS);
+  } else {
+    sm70_fd_hmma_partition_kernel_impl<false><<<grid, block, 0, stream>>>(
+        FD_ARGS);
+  }
+#undef FD_ARGS
 
   const float* ws_ptr = reinterpret_cast<const float*>(workspace.data_ptr());
   float* part_ptr =
