@@ -77,7 +77,13 @@ for i, C in enumerate([8192, 16384, 32768, 65536, 131072]):
     body = body_for_tok(C, seed=7000 + i * 131)
     m0 = get("spec_decode")
     t0 = time.time()
-    ntok, times, usage = stream_chat(body)
+    try:
+        ntok, times, usage = stream_chat(body)
+    except urllib.error.HTTPError as e:
+        # top target intentionally exceeds max_model_len (server-side 400);
+        # stop cleanly instead of dumping a traceback.
+        print(f"BENCH_STOP_EARLY ctx>={C}: HTTP {e.code}", flush=True)
+        break
     m1 = get("spec_decode")
     ctx = usage.get("prompt_tokens", C)
     # SSE deltas batch multiple accepted tokens per step under spec decode;
