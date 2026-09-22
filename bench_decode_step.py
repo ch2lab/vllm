@@ -17,6 +17,11 @@ words = ["quantum","computing","optimization","network","algorithm",
     "activation","quantization","speculative","draft","expert","routing"]
 
 def body_for_tok(target, seed):
+    # Unique per-invocation salt prefix defeats vLLM prefix caching
+    # (mirrors llm_speedtest's cache-busting; same-seed repeat runs
+    # would otherwise measure a cache-hit prefill).
+    import os as _os, time as _t
+    seed = seed + int(_t.time_ns()) % 1_000_003 + _os.getpid()
     r = random.Random(seed); toks = []
     while len(toks) < target * 4:
         toks.extend(r.choices(words, k=30))
