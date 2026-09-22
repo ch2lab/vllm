@@ -1837,6 +1837,15 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         )
         return paged_kv_indices
 
+    @staticmethod
+    def _sm70_splitd_pad_mblocks(m_blocks: int, page: int) -> int:
+        # splitd paged entry requires (block_table cols * page) % kBlockN(32)
+        # == 0; with the staging page of 16 that means an EVEN column count.
+        # Round up; padded tail pages are never read (kv_len masks them).
+        import math
+        need = 32 // math.gcd(32, page)
+        return ((m_blocks + need - 1) // need) * need
+
     def _sm70_splitd_ensure_ws(
         self,
         kv_len: int,
@@ -1865,7 +1874,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
             self._sm70_splitd_ws is None or kv_len > self._sm70_splitd_ws_cap
         ):
             new_cap = min(max(kv_len, 65536) * 2, 262144)
-            m_cap = (new_cap + page - 1) // page
+            m_cap = self._sm70_splitd_pad_mblocks(
+                (new_cap + page - 1) // page, page)
             k = torch.zeros(
                 m_cap,
                 page,
@@ -1890,7 +1900,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         if stage_kv:
             k, v = self._sm70_splitd_ws
             k_ws, v_ws = k, v
-            m = (kv_len + page - 1) // page
+            m = self._sm70_splitd_pad_mblocks(
+                (kv_len + page - 1) // page, page)
         else:
             k_ws, v_ws = None, None
         q_padded = ((q_len + 63) // 64) * 64
@@ -2565,9 +2576,10 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                     # the true (q_len, kv_len); the query/
                                     # output buffers pad to the 64-row tile
                                     # and forward slices the tail off.
-                                    m_blocks = (
+                                    m_blocks = self._sm70_splitd_pad_mblocks(
                                         (kv_len + self.page_size - 1)
-                                        // self.page_size
+                                        // self.page_size,
+                                        self.page_size,
                                     )
                                     # NVFP4 in-kernel-dequant path: the
                                     # kernel reads the packed cache
