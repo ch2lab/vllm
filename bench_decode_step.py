@@ -21,7 +21,9 @@ def body_for_tok(target, seed):
     # (mirrors llm_speedtest's cache-busting; same-seed repeat runs
     # would otherwise measure a cache-hit prefill).
     import os as _os, time as _t
-    seed = seed + int(_t.time_ns()) % 1_000_003 + _os.getpid()
+    salt = _os.environ.get("BENCH_SALT")
+    seed = seed + (int(salt) if salt and salt.isdigit()
+                   else int(_t.time_ns()) % 1_000_003 + _os.getpid())
     r = random.Random(seed); toks = []
     while len(toks) < target * 4:
         toks.extend(r.choices(words, k=30))
