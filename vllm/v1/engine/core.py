@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import gc
+import collections
 import os
 import queue
 import signal
@@ -100,6 +101,34 @@ logger = init_logger(__name__)
 HANDSHAKE_TIMEOUT_MINS = 5
 
 _R = TypeVar("_R")  # Return type for collective_rpc
+
+
+
+_STEP_PROF = os.environ.get("VLLM_SM70_STEP_PROF", "0") == "1"
+_step_prof_buf: dict[str, collections.deque] = {}
+_step_prof_n = 0
+
+
+def _sp_rec(seg: float | str, ms: float = 0.0) -> None:
+    """Segment timer for the engine-step host loop (opt-in profiling)."""
+    global _step_prof_n
+    if not _STEP_PROF:
+        return
+    if isinstance(seg, str):
+        dq = _step_prof_buf.get(seg)
+        if dq is None:
+            dq = _step_prof_buf[seg] = collections.deque(maxlen=400)
+        dq.append(ms)
+        _step_prof_n += 1
+        if _step_prof_n % 800 == 0:
+            import statistics
+            for k, v in sorted(_step_prof_buf.items()):
+                if len(v) >= 20:
+                    a = sorted(v)
+                    logger.info(
+                        "STEPPROF %-24s n=%4d median %7.2fms p90 %7.2fms",
+                        k, len(a), statistics.median(a),
+                        a[int(len(a) * 0.9)])
 
 
 class EngineCore:
@@ -597,23 +626,35 @@ class EngineCore:
         # or finished and not yet removed from the batch.
         if not self.scheduler.has_requests():
             return {}, False
+        _t = time.monotonic()
         scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+        _sp_rec("step.sched", (time.monotonic() - _t) * 1e3)
+        _t = time.monotonic()
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
+        _sp_rec("step.exec_dispatch", (time.monotonic() - _t) * 1e3)
+        _t = time.monotonic()
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+        _sp_rec("step.grammar", (time.monotonic() - _t) * 1e3)
         with (
             self.capture_iteration_details(scheduler_output) as iteration_details,
             self.log_error_detail(scheduler_output),
         ):
+            _t = time.monotonic()
             model_output = future.result()
+            _sp_rec("step.WAIT_result", (time.monotonic() - _t) * 1e3)
             if model_output is None:
+                _t = time.monotonic()
                 model_output = self.model_executor.sample_tokens(grammar_output)
+                _sp_rec("step.sample_tokens", (time.monotonic() - _t) * 1e3)
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
+        _t = time.monotonic()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+        _sp_rec("step.update", (time.monotonic() - _t) * 1e3)
         self._attach_iteration_details(engine_core_outputs, iteration_details)
 
         return engine_core_outputs, scheduler_output.total_num_scheduled_tokens > 0
@@ -655,11 +696,15 @@ class EngineCore:
         model_executed = False
         deferred_scheduler_output = None
         if self.scheduler.has_requests():
+            _t = time.monotonic()
             scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+            _sp_rec("bq.sched", (time.monotonic() - _t) * 1e3)
+            _t = time.monotonic()
             with self.log_error_detail(scheduler_output):
                 exec_future = self.model_executor.execute_model(
                     scheduler_output, non_block=True
                 )
+            _sp_rec("bq.exec_dispatch", (time.monotonic() - _t) * 1e3)
             if self.is_ec_consumer:
                 model_executed = scheduler_output.total_num_scheduled_tokens > 0
 
@@ -703,7 +748,9 @@ class EngineCore:
             self.capture_iteration_details(scheduler_output) as iteration_details,
             self.log_error_detail(scheduler_output),
         ):
+            _t = time.monotonic()
             model_output = future.result()
+            _sp_rec("bq.WAIT_result", (time.monotonic() - _t) * 1e3)
             if model_output is None:
                 # None from sample_tokens() implies that the original execute_model()
                 # call failed - raise that exception.
@@ -713,9 +760,11 @@ class EngineCore:
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
+        _t = time.monotonic()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+        _sp_rec("bq.update", (time.monotonic() - _t) * 1e3)
         self._attach_iteration_details(engine_core_outputs, iteration_details)
 
         # NOTE(nick): We can either handle the deferred tasks here or save
