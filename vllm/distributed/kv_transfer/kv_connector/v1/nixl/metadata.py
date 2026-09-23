@@ -227,6 +227,7 @@ class RemoteMeta:
     engine_id: str
     request_id: str
     blocks_expiry_time: float | None = None
+    num_tokens: int | None = None
 
 
 @dataclass
@@ -246,6 +247,12 @@ class ReqMeta:
     remote_block_size: int | None = None
     # Remote producer pipeline-parallel size (push mode, D side).
     pp_size: int = 1
+    # True only when the scheduler parked the request in WAITING_FOR_REMOTE_KVS
+    # and expects it in finished_recving; notify-only recvs must not be reported.
+    awaiting_kvs: bool = False
+    # Worker-only, per-region physical pages to zero after a successful pull.
+    # None selects group-based completion; empty lists mean no zeroing.
+    region_blocks_to_zero: BlockIds | None = None
 
 
 class NixlConnectorMetadata(KVConnectorMetadata):
@@ -275,6 +282,7 @@ class NixlConnectorMetadata(KVConnectorMetadata):
         local_block_ids: BlockIds,
         kv_transfer_params: dict[str, Any],
         local_num_computed_blocks: tuple[int, ...] = (),
+        awaiting_kvs: bool = False,
     ) -> ReqMeta:
         return ReqMeta(
             local_block_ids=local_block_ids,
@@ -285,6 +293,7 @@ class NixlConnectorMetadata(KVConnectorMetadata):
             remote_block_size=kv_transfer_params.get("remote_block_size"),
             pp_size=kv_transfer_params.get("pp_size", 1),
             local_num_computed_blocks=local_num_computed_blocks,
+            awaiting_kvs=awaiting_kvs,
         )
 
     def add_new_req_to_save(
@@ -303,11 +312,13 @@ class NixlConnectorMetadata(KVConnectorMetadata):
         local_block_ids: BlockIds,
         kv_transfer_params: dict[str, Any],
         local_num_computed_blocks: tuple[int, ...] = (),
+        awaiting_kvs: bool = False,
     ):
         req = self._add_new_req(
             local_block_ids,
             kv_transfer_params,
             local_num_computed_blocks,
+            awaiting_kvs,
         )
         req.remote = RemoteMeta(
             block_ids=kv_transfer_params["remote_block_ids"],
@@ -316,5 +327,6 @@ class NixlConnectorMetadata(KVConnectorMetadata):
             host=kv_transfer_params["remote_host"],
             port=kv_transfer_params["remote_port"],
             blocks_expiry_time=kv_transfer_params.get("remote_blocks_expiry_time"),
+            num_tokens=kv_transfer_params.get("remote_num_tokens"),
         )
         self.reqs_to_recv[request_id] = req

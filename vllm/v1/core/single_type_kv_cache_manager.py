@@ -2003,7 +2003,9 @@ class MambaManager(SingleTypeKVCacheManager):
         )
         num_cached_blocks_after = self.num_cached_block.get(request.request_id, 0)
         if self.mamba_cache_mode == "align":
-            partial_hash = self._cache_partial_tail_block(request, num_tokens)
+            partial_hash = self._cache_partial_tail_block(
+                request, num_tokens, retention_interval=retention_interval
+            )
             if partial_hash is not None:
                 self.cached_blocks_this_step.add(partial_hash)
         if num_cached_blocks_after > num_cached_blocks_before:
@@ -2038,6 +2040,7 @@ class MambaManager(SingleTypeKVCacheManager):
         self,
         request: Request,
         num_tokens: int,
+        retention_interval: int | None,
     ) -> BlockHashWithGroupId | None:
         hash_block_size = self.block_pool.hash_block_size
         # Re-key the reserved block at its exported checkpoint boundary.
@@ -2047,6 +2050,17 @@ class MambaManager(SingleTypeKVCacheManager):
             blocks = self.req_to_blocks[request.request_id]
             assert 0 <= checkpoint_idx < len(blocks)
             checkpoint_block = blocks[checkpoint_idx]
+            if (
+                retention_interval == 0
+                and num_tokens < request.num_prompt_tokens
+                and checkpoint_position != request.shared_prefix_boundary
+            ):
+                # retention_interval == 0 keeps this transient checkpoint
+                # request-local. The slot may carry a hash from this step's
+                # full-block pass; that must go too, since the checkpoint
+                # state is about to overwrite the block.
+                self.block_pool._maybe_evict_cached_block(checkpoint_block)
+                return None
             if checkpoint_block.block_hash_num_tokens == checkpoint_position:
                 return None
             return self.block_pool.cache_partial_block(
@@ -2488,12 +2502,14 @@ class HiSparseResidentManager(_HiSparseAuxiliaryManager):
         del num_tokens_main_model
         assert not new_computed_blocks
         if total_computed_tokens > num_local_computed_tokens:
-            if total_computed_tokens % self.block_size != 0:
-                raise ValueError(
-                    "A host-only HiSparse import must end on a cache-block boundary."
-                )
-            imported_pages = total_computed_tokens // self.block_size
-            return max(cdiv(num_tokens, self.block_size) - imported_pages, 0)
+            # Keep the last imported page writable, including the last-token
+            # replay on a full prompt hit. Only earlier pages stay host-only.
+            imported_pages = cdiv(total_computed_tokens, self.block_size)
+            existing = len(self.req_to_blocks.get(request_id, ()))
+            needs_tail = self.get_resident_page(request_id, imported_pages - 1) is None
+            return int(needs_tail) + max(
+                cdiv(num_tokens, self.block_size) - max(imported_pages, existing), 0
+            )
         existing = len(self.req_to_blocks.get(request_id, ()))
         host_pages = cdiv(num_local_computed_tokens, self.block_size)
         required = cdiv(num_tokens, self.block_size)
@@ -2508,13 +2524,15 @@ class HiSparseResidentManager(_HiSparseAuxiliaryManager):
         num_local_computed_tokens: int,
         num_external_computed_tokens: int,
     ) -> None:
-        """Represent imported host history with null resident pages."""
+        """Reserve a writable final page; earlier imported pages stay on host."""
         assert num_external_computed_tokens > 0
         num_tokens = num_local_computed_tokens + num_external_computed_tokens
         blocks = self.req_to_blocks[request_id]
-        tail_page = cdiv(num_tokens, self.block_size) - 1
+        tail_page = (num_tokens - 1) // self.block_size
         if len(blocks) <= tail_page:
             blocks.extend([self._null_block] * (tail_page + 1 - len(blocks)))
+        if blocks[tail_page].is_null:
+            blocks[tail_page] = self.block_pool.get_new_blocks(1)[0]
 
     def add_local_computed_blocks(
         self,
