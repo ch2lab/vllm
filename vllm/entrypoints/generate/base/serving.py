@@ -38,7 +38,7 @@ from vllm.tracing import (
     extract_trace_headers,
     log_tracing_disabled_warning,
 )
-from vllm.v1.metrics.stats import RequestStateStats
+from vllm.v1.metrics.stats import AbortedRequestStats, RequestStateStats
 
 logger = init_logger(__name__)
 
@@ -145,6 +145,47 @@ def resolve_client_address(raw_request: Request | None) -> str:
     return "-"
 
 
+def _prefill_decode_intervals(
+    stats: RequestStateStats,
+) -> tuple[float | None, float | None]:
+    scheduled = stats.scheduled_ts
+    first = stats.first_token_ts
+    last = stats.last_token_ts
+    prefill_s = first - scheduled if scheduled > 0 and first > 0 else None
+    decode_s = last - first if first > 0 and last > 0 else None
+    return prefill_s, decode_s
+
+
+def _format_request_summary(
+    num_prompt_tokens: int,
+    num_generation_tokens: int,
+    num_cached_tokens: int,
+    prefill_s: float | None,
+    decode_s: float | None,
+) -> str:
+    computed_tokens = max(0, num_prompt_tokens - num_cached_tokens)
+    prefill_rate = (
+        computed_tokens / prefill_s if prefill_s and prefill_s > 0 else 0.0
+    )
+    decode_rate = (
+        num_generation_tokens / decode_s if decode_s and decode_s > 0 else 0.0
+    )
+    cache_hit_pct = (
+        num_cached_tokens / num_prompt_tokens * 100.0
+        if num_prompt_tokens > 0
+        else 0.0
+    )
+    prefill_ms = prefill_s * 1000.0 if prefill_s is not None else 0.0
+    decode_ms = decode_s * 1000.0 if decode_s is not None else 0.0
+    return (
+        f"input {num_prompt_tokens} tokens"
+        f"(prefill {prefill_ms:.1f} ms, {prefill_rate:.1f} tok/s, "
+        f"cache hit: {cache_hit_pct:.0f}%), "
+        f"output {num_generation_tokens} tokens"
+        f"(decode {decode_ms:.1f} ms, {decode_rate:.1f} tok/s)"
+    )
+
+
 def build_request_summary(
     final_res: RequestOutput | list[RequestOutput] | None,
 ) -> str | None:
@@ -173,17 +214,11 @@ def build_request_summary(
         num_generation_tokens += sum(len(o.token_ids) for o in r.outputs)
         num_cached_tokens += r.num_cached_tokens or 0
 
-    stats = res_list[0].metrics
     prefill_s: float | None = None
     decode_s: float | None = None
+    stats = res_list[0].metrics
     if stats is not None:
-        scheduled = stats.scheduled_ts
-        first = stats.first_token_ts
-        last = stats.last_token_ts
-        if scheduled > 0 and first > 0:
-            prefill_s = first - scheduled
-        if first > 0 and last > 0:
-            decode_s = last - first
+        prefill_s, decode_s = _prefill_decode_intervals(stats)
         # For streaming, per-chunk ``token_ids`` are deltas (the last chunk
         # carries only the final token(s)), so the loop sum above undercounts
         # the total. The engine's cumulative count (updated every step) is the
@@ -191,28 +226,31 @@ def build_request_summary(
         if stats.num_generation_tokens:
             num_generation_tokens = stats.num_generation_tokens
 
-    computed_tokens = max(0, num_prompt_tokens - num_cached_tokens)
-    prefill_rate = (
-        computed_tokens / prefill_s if prefill_s and prefill_s > 0 else 0.0
-    )
-    decode_rate = (
-        num_generation_tokens / decode_s if decode_s and decode_s > 0 else 0.0
-    )
-    cache_hit_pct = (
-        num_cached_tokens / num_prompt_tokens * 100.0
-        if num_prompt_tokens > 0
-        else 0.0
+    return _format_request_summary(
+        num_prompt_tokens,
+        num_generation_tokens,
+        num_cached_tokens,
+        prefill_s,
+        decode_s,
     )
 
-    prefill_ms = prefill_s * 1000.0 if prefill_s is not None else 0.0
-    decode_ms = decode_s * 1000.0 if decode_s is not None else 0.0
 
-    return (
-        f"input {num_prompt_tokens} tokens"
-        f"(prefill {prefill_ms:.1f} ms, {prefill_rate:.1f} tok/s, "
-        f"cache hit: {cache_hit_pct:.0f}%), "
-        f"output {num_generation_tokens} tokens"
-        f"(decode {decode_ms:.1f} ms, {decode_rate:.1f} tok/s)"
+def build_aborted_request_summary(
+    aborted_stats: list[AbortedRequestStats],
+) -> str:
+    """Summary for a request disconnected before any output reached the
+    serving layer (e.g. an aborted non-streaming request).
+
+    Counts aggregate over parallel-sampling children; timing intervals
+    come from the first child's stats, matching ``build_request_summary``.
+    """
+    prefill_s, decode_s = _prefill_decode_intervals(aborted_stats[0].stats)
+    return _format_request_summary(
+        sum(s.prompt_len for s in aborted_stats),
+        sum(s.stats.num_generation_tokens for s in aborted_stats),
+        sum(s.num_cached_tokens for s in aborted_stats),
+        prefill_s,
+        decode_s,
     )
 
 

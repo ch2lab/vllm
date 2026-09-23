@@ -33,6 +33,7 @@ from vllm.v1.engine.detokenizer import IncrementalDetokenizer
 from vllm.v1.engine.logprobs import LogprobsProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import (
+    AbortedRequestStats,
     IterationStats,
     LoRARequestStates,
     RequestSpecDecodeMetrics,
@@ -491,6 +492,33 @@ class OutputProcessor:
         for _, state in self.request_states.items():
             assert state.queue is not None
             state.queue.put(e)
+
+    def get_live_stats(self, request_id: str) -> list[AbortedRequestStats]:
+        """Snapshot stats of the live states associated with request_id.
+
+        The request_id may be an internal request ID (n=1) or a parallel
+        sampling parent request ID; child states are included either way.
+        Returns an empty list if no live state is registered.
+        """
+        if (req_state := self.request_states.get(request_id)) is not None:
+            internal_ids = self.external_req_ids.get(req_state.external_req_id, [])
+        elif (parent := self.parent_requests.get(request_id)) is not None:
+            internal_ids = parent.child_requests
+        else:
+            return []
+
+        snapshots = []
+        for internal_id in internal_ids:
+            state = self.request_states.get(internal_id)
+            if state is not None and state.stats is not None:
+                snapshots.append(
+                    AbortedRequestStats(
+                        prompt_len=state.prompt_len,
+                        num_cached_tokens=state.num_cached_tokens,
+                        stats=state.stats,
+                    )
+                )
+        return snapshots
 
     def abort_requests(self, request_ids: Iterable[str], internal: bool) -> list[str]:
         """Abort a list of requests.

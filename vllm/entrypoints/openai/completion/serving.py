@@ -16,6 +16,7 @@ from vllm.entrypoints.generate.base.protocol import (
 )
 from vllm.entrypoints.generate.base.serving import (
     GenerateBaseServing,
+    build_aborted_request_summary,
     build_per_request_timing_metrics,
     build_spec_decoding_metrics,
     clamp_prompt_logprobs,
@@ -49,6 +50,7 @@ from vllm.tokenizers import TokenizerLike
 from vllm.utils.async_utils import merge_async_iterators
 from vllm.utils.collection_utils import as_list
 from vllm.utils.serial_utils import numpy2base64
+from vllm.v1.engine.exceptions import ClientDisconnectedError
 
 logger = init_logger(__name__)
 
@@ -264,7 +266,11 @@ class OpenAIServingCompletion(GenerateBaseServing):
                 tokenizer,
                 request_metadata,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as e:
+            if isinstance(e, ClientDisconnectedError):
+                request_metadata.summary = build_aborted_request_summary(
+                    e.aborted_stats
+                )
             return self.create_error_response("Client disconnected")
 
         # When user requests streaming but we don't stream, we still need to
@@ -501,7 +507,10 @@ class OpenAIServingCompletion(GenerateBaseServing):
             logger.exception("Error in completion stream generator.")
             data = self.create_streaming_error_response(e)
             yield f"data: {data}\n\n"
-        self._record_request_summary(request_metadata, last_res)
+        finally:
+            # Also runs on client abort (GeneratorExit from aclose), so aborted
+            # streams still carry their metrics into the access log.
+            self._record_request_summary(request_metadata, last_res)
         yield "data: [DONE]\n\n"
 
     def request_output_to_completion_response(

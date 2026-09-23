@@ -238,6 +238,16 @@ class RequestStateStats:
 
 
 @dataclass
+class AbortedRequestStats:
+    """Live stats for one in-flight child request, snapshotted at abort
+    time before ``OutputProcessor`` drops the ``RequestState``."""
+
+    prompt_len: int
+    num_cached_tokens: int
+    stats: RequestStateStats
+
+
+@dataclass
 class FinishedRequestStats:
     """Stats associated with a finished request."""
 

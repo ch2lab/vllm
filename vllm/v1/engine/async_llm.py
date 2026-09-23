@@ -45,7 +45,11 @@ from vllm.utils.async_utils import cancel_task_threadsafe
 from vllm.utils.collection_utils import as_list
 from vllm.v1.engine import EngineCoreRequest, PauseMode
 from vllm.v1.engine.core_client import EngineCoreClient
-from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
+from vllm.v1.engine.exceptions import (
+    ClientDisconnectedError,
+    EngineDeadError,
+    EngineGenerateError,
+)
 from vllm.v1.engine.input_processor import InputProcessor
 from vllm.v1.engine.output_processor import OutputProcessor, RequestOutputCollector
 from vllm.v1.engine.parallel_sampling import ParentRequest
@@ -57,7 +61,7 @@ from vllm.v1.metrics.loggers import (
     load_stat_logger_plugin_factories,
 )
 from vllm.v1.metrics.prometheus import shutdown_prometheus
-from vllm.v1.metrics.stats import IterationStats
+from vllm.v1.metrics.stats import AbortedRequestStats, IterationStats
 
 logger = init_logger(__name__)
 
@@ -701,11 +705,19 @@ class AsyncLLM(EngineClient):
         # If the request is disconnected by the client, generate()
         # is cancelled or the generator is garbage collected. So,
         # we abort the request if we end up here.
-        except (asyncio.CancelledError, GeneratorExit):
+        except (asyncio.CancelledError, GeneratorExit) as e:
+            # Snapshot live stats before the abort drops them: a cancelled
+            # non-streaming request never receives an output, and the
+            # serving layer needs these to still report disconnect metrics.
+            aborted_stats: list[AbortedRequestStats] = []
+            if q is not None and isinstance(e, asyncio.CancelledError):
+                aborted_stats = self.output_processor.get_live_stats(q.request_id)
             if q is not None:
                 await self.abort(q.request_id, internal=True)
             if self.log_requests:
                 logger.info("Request %s aborted.", request_id)
+            if aborted_stats:
+                raise ClientDisconnectedError(aborted_stats) from e
             raise
 
         # Engine is dead. Do not abort since we shut down.

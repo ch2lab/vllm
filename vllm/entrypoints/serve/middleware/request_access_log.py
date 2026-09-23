@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import logging
-from collections.abc import Awaitable
 from http import HTTPStatus
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -21,28 +20,40 @@ class RequestAccessLogMiddleware:
     ``| request_id: prompt_tokens=... ...``. The proxy-aware resolved client
     is used when available, else the direct TCP peer. When the caller's
     User-Agent is known (nginx forwards it in ``X-Forwarded-User-Agent``),
-    it is shown after the client as ``client [ua]``.
+    it is shown after the client as ``client [ua]``. Responses cut short by a
+    client abort are logged too, with status 499 when no response start was
+    sent.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    def __call__(self, scope: Scope, receive: Receive, send: Send) -> Awaitable[None]:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
-            return self.app(scope, receive, send)
+            await self.app(scope, receive, send)
+            return
 
-        status = {"code": 0}
+        state = {"code": 0, "logged": False}
 
         async def send_wrapped(message: Message) -> None:
             if message["type"] == "http.response.start":
-                status["code"] = message["status"]
+                state["code"] = message["status"]
             elif message["type"] == "http.response.body" and not message.get(
                 "more_body", False
             ):
-                self._log(scope, status["code"])
+                state["logged"] = True
+                self._log(scope, state["code"])
             await send(message)
 
-        return self.app(scope, receive, send_wrapped)
+        try:
+            await self.app(scope, receive, send_wrapped)
+        finally:
+            # Client aborted before the response body completed: the final
+            # body message never arrives, so emit the line here. The serving
+            # generator's ``finally`` (stashing the summary) runs during this
+            # cancellation unwind, before we get here.
+            if not state["logged"]:
+                self._log(scope, state["code"] or 499)
 
     def _log(self, scope: Scope, code: int) -> None:
         if not logger.isEnabledFor(logging.INFO):
@@ -69,7 +80,11 @@ class RequestAccessLogMiddleware:
             path = f"{path}?{query.decode('latin-1')}"
 
         protocol = f"HTTP/{scope.get('http_version', '1.1')}"
-        reason = HTTPStatus(code).phrase if 0 < code < 600 else ""
+        try:
+            reason = HTTPStatus(code).phrase
+        except ValueError:
+            # Non-standard codes such as our synthetic 499 (client aborted).
+            reason = ""
         ua = self._user_agent(scope)
         caller = f"{client} [{ua}]" if ua else client
         line = f'{caller} - "{scope.get("method", "")} {path} {protocol}" {code}'

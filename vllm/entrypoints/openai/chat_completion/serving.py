@@ -25,6 +25,7 @@ from vllm.entrypoints.generate.base.protocol import (
 )
 from vllm.entrypoints.generate.base.serving import (
     GenerateBaseServing,
+    build_aborted_request_summary,
     build_per_request_timing_metrics,
     build_spec_decoding_metrics,
     clamp_prompt_logprobs,
@@ -67,6 +68,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.collection_utils import as_list
 from vllm.utils.serial_utils import numpy2base64
+from vllm.v1.engine.exceptions import ClientDisconnectedError
 
 logger = init_logger(__name__)
 
@@ -908,8 +910,11 @@ class OpenAIServingChat(GenerateBaseServing):
             logger.exception("Error in chat completion stream generator.")
             data = self.create_streaming_error_response(e)
             yield f"data: {data}\n\n"
+        finally:
+            # Also runs on client abort (GeneratorExit from aclose), so aborted
+            # streams still carry their metrics into the access log.
+            self._record_request_summary(request_metadata, last_res)
         # Send the final done message after all response.n are finished
-        self._record_request_summary(request_metadata, last_res)
         yield "data: [DONE]\n\n"
 
     async def chat_completion_full_generator(
@@ -930,7 +935,11 @@ class OpenAIServingChat(GenerateBaseServing):
         try:
             async for res in result_generator:
                 final_res = res
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as e:
+            if isinstance(e, ClientDisconnectedError):
+                request_metadata.summary = build_aborted_request_summary(
+                    e.aborted_stats
+                )
             return self.create_error_response("Client disconnected")
 
         if final_res is None:
