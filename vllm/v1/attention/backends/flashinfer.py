@@ -647,6 +647,8 @@ def _nvfp4_d256_prefill(
     impl,
     prefill_query: torch.Tensor,
     kv_cache: torch.Tensor,
+    kv_data: tuple[torch.Tensor, torch.Tensor],
+    kv_scale: tuple[torch.Tensor, torch.Tensor],
     pre: FIPrefill,
     q_scales: tuple[float, float, float],
     out_prefill: torch.Tensor,
@@ -677,16 +679,25 @@ def _nvfp4_d256_prefill(
     F_sf = F - F_data
     page_size = kv_cache.shape[2]
     qo = pre.cum_seq_lens_q
+    # Reuse the exact K/V data + block-scale views the default (working)
+    # prefill feeds the FlashInfer wrapper, so this kernel sees the same
+    # physical page convention (HND/NHD) regardless of the cache layout.
+    k_all, v_all = kv_data
+    ksf_all, vsf_all = kv_scale
+    hnd = k_all.shape[1] == Hk
     for i in range(pre.block_tables.shape[0]):
         q0 = int(qo[i].item())
         q1 = int(qo[i + 1].item())
         kv_len = int(pre.seq_lens[i].item())
         nblocks = (kv_len + page_size - 1) // page_size
-        gathered = kv_cache.index_select(0, pre.block_tables[i, :nblocks])
-        # Split each side of the gathered pages into its physical data and
-        # scale regions (head-major, token-minor views of the 4-D side).
-        k_data, k_sf = nvfp4_split_data_scale(gathered[:, :Hk])
-        v_data, v_sf = nvfp4_split_data_scale(gathered[:, Hk:])
+        blk = pre.block_tables[i, :nblocks]
+        k_data = k_all.index_select(0, blk)
+        v_data = v_all.index_select(0, blk)
+        k_sf = ksf_all.index_select(0, blk)
+        v_sf = vsf_all.index_select(0, blk)
+        if not hnd:
+            k_data, v_data = k_data.transpose(1, 2), v_data.transpose(1, 2)
+            k_sf, v_sf = k_sf.transpose(1, 2), v_sf.transpose(1, 2)
         # Repack into the kernel's row-interleaved (Hk, S, F) rows
         # [data(h,s) | sf(h,s)], token order block-major, sliced to kv_len.
         k_side = torch.cat([
@@ -1803,13 +1814,15 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                         fixed_split_size=self.prefill_fixed_split_size,
                         disable_split_kv=self.disable_split_kv,
                     )
+                prefill_end = prefill_start + num_prefills
                 qo_indptr_prefill_gpu = (
-                    qo_indptr[prefill_start:] - qo_indptr[prefill_start]
+                    qo_indptr[prefill_start : prefill_end + 1]
+                    - qo_indptr[prefill_start]
                 )
                 attn_metadata.prefill = FIPrefill(
                     wrapper=prefill_wrapper,
-                    block_tables=block_table_tensor[prefill_start:],
-                    seq_lens=seq_lens[prefill_start:],
+                    block_tables=block_table_tensor[prefill_start:prefill_end],
+                    seq_lens=seq_lens[prefill_start:prefill_end],
                     cum_seq_lens_q=qo_indptr_prefill_gpu,
                 )
 
@@ -2357,6 +2370,8 @@ class FlashInferImpl(AttentionImpl):
                             self,
                             prefill_query,
                             kv_cache,
+                            nvfp4_kv_data,
+                            nvfp4_kv_block_scales,
                             attn_metadata.prefill,
                             (layer._q_scale_float, layer._k_scale_float,
                              layer._v_scale_float),
