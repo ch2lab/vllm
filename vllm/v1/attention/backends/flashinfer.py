@@ -656,27 +656,27 @@ def _nvfp4_d256_prefill(
 ) -> None:
     """Run the QK MXFP8 / PV NVFP4 kernel for NVFP4-KV D256 prefill requests.
 
-    One kernel call per prefill request: gather that request's paged NVFP4
-    blocks into dense per-side views, convert to the kernel's MXFP8/NVFP4
-    input formats, and dispatch the dense kernel. ``kv_cache`` is the raw
-    (num_blocks, 2*N_kv, block_size, F) layer cache; K heads occupy the first
-    N_kv head slots, V the next N_kv (page = [K_data|K_scale|V_data|V_scale]).
-    Within each side the page bytes are one head-major data region
-    (H_kv·N·(F·8//9)) followed by one head-major scale region
-    (H_kv·N·(F- F·8//9)), as ``nvfp4_split_data_scale`` reads back for the
-    FA2 path; the row-interleaved [data | scale] rows are only the kernel's
-    input form, re-assembled here.
+    One kernel call per prefill request. The paged NVFP4 cache is gathered,
+    dequantized and re-quantized in 32K-token chunks straight into the dense
+    K/V buffers the SM120 kernel requires, so staging memory stays O(chunk)
+    instead of O(context) (~450 MiB of kernel inputs at 500K tokens instead
+    of ~3 GiB of intermediate copies).
+
+    ``kv_cache`` is the raw (num_blocks, 2*N_kv, block_size, F) layer cache;
+    K heads occupy the first N_kv head slots, V the next N_kv
+    (page = [K_data|K_scale|V_data|V_scale]). Within each side the page bytes
+    are one head-major data region (H_kv·N·(F·8//9)) followed by one
+    head-major scale region (H_kv·N·(F- F·8//9)), as
+    ``nvfp4_split_data_scale`` reads back for the FA2 path; the
+    row-interleaved [data | scale] rows are only the kernel's input form.
     """
     from flashinfer.qk_mxfp8_pv_nvfp4_attention_sm120 import (
-        nvfp4_prefill_convert,
+        nvfp4_prefill_convert_paged,
         qk_mxfp8_pv_nvfp4_attention_sm120_fwd,
     )
 
     q_scale, k_scale, v_scale = q_scales
     Hk = impl.num_kv_heads
-    F = nvfp4_kv_cache_full_dim(impl.head_size)
-    F_data = F * 8 // 9
-    F_sf = F - F_data
     page_size = kv_cache.shape[2]
     qo = pre.cum_seq_lens_q
     # Reuse the exact K/V data + block-scale views the default (working)
@@ -688,42 +688,37 @@ def _nvfp4_d256_prefill(
     for i in range(pre.block_tables.shape[0]):
         q0 = int(qo[i].item())
         q1 = int(qo[i + 1].item())
+        q_len = q1 - q0
         kv_len = int(pre.seq_lens[i].item())
         nblocks = (kv_len + page_size - 1) // page_size
         blk = pre.block_tables[i, :nblocks]
-        k_data = k_all.index_select(0, blk)
-        v_data = v_all.index_select(0, blk)
-        k_sf = ksf_all.index_select(0, blk)
-        v_sf = vsf_all.index_select(0, blk)
-        if not hnd:
-            k_data, v_data = k_data.transpose(1, 2), v_data.transpose(1, 2)
-            k_sf, v_sf = k_sf.transpose(1, 2), v_sf.transpose(1, 2)
-        # Repack into the kernel's row-interleaved (Hk, S, F) rows
-        # [data(h,s) | sf(h,s)], token order block-major, sliced to kv_len.
-        k_side = torch.cat([
-            k_data.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_data),
-            k_sf.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_sf)
-            .view(torch.uint8),
-        ], dim=-1)[:, :kv_len].contiguous()
-        v_side = torch.cat([
-            v_data.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_data),
-            v_sf.permute(1, 0, 2, 3).contiguous().reshape(Hk, -1, F_sf)
-            .view(torch.uint8),
-        ], dim=-1)[:, :kv_len].contiguous()
-        q_bf16 = prefill_query[q0:q1].unsqueeze(0).transpose(1, 2)
-        q_bf16 = q_bf16.contiguous()  # (1, Hq, M, D), convert needs C-order
+        # Hand over the (M, Hq, D) activation as a strided HND view: the
+        # converter only needs a dense last dimension, and the quantizer reads
+        # it with these strides, so no transpose copy is materialized.
         (q_fp8, k_fp8, v_fp4_t,
-         q_sf, k_sf, v_sf_t) = nvfp4_prefill_convert(
-            k_side, v_side, q_bf16, k_scale, v_scale, q_scale)
-        q_len = q1 - q0
-        out_req = qk_mxfp8_pv_nvfp4_attention_sm120_fwd(
-            q_fp8, k_fp8, v_fp4_t, q_sf, k_sf, v_sf_t,
-            sm_scale=impl.scale, causal=causal,
-            unpadded_q_len=q_len, unpadded_k_len=kv_len,
-            out_dtype=torch.bfloat16,
-        )
-        # fwd returns the 128-padded q extent; slice back to this request.
-        out_prefill[q0:q1] = out_req[0, :, :q_len].transpose(0, 1)
+         q_sf, k_sf, v_sf) = nvfp4_prefill_convert_paged(
+            k_all, v_all, ksf_all, vsf_all, blk, kv_len,
+            prefill_query[q0:q1].unsqueeze(0).transpose(1, 2),
+            k_scale, v_scale, q_scale,
+            page_size=page_size, hnd=hnd)
+        if q_fp8.shape[2] == q_len:
+            # Unpadded extent: let the kernel write the activation buffer
+            # through a transposed view instead of copying out afterwards.
+            out_req = qk_mxfp8_pv_nvfp4_attention_sm120_fwd(
+                q_fp8, k_fp8, v_fp4_t, q_sf, k_sf, v_sf,
+                sm_scale=impl.scale, causal=causal,
+                unpadded_q_len=q_len, unpadded_k_len=kv_len,
+                out=out_prefill[q0:q1].unsqueeze(0).transpose(1, 2),
+                out_dtype=out_prefill.dtype,
+            )
+        else:
+            out_req = qk_mxfp8_pv_nvfp4_attention_sm120_fwd(
+                q_fp8, k_fp8, v_fp4_t, q_sf, k_sf, v_sf,
+                sm_scale=impl.scale, causal=causal,
+                unpadded_q_len=q_len, unpadded_k_len=kv_len,
+                out_dtype=torch.bfloat16,
+            )
+            out_prefill[q0:q1] = out_req[0, :, :q_len].transpose(0, 1)
 
 
 @dataclass
