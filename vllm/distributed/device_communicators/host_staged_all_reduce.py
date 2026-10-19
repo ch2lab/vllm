@@ -320,16 +320,13 @@ class HostStagedAllReduce:
         p_own, s_own = self._side_views(n, 0)
         p_peer, s_peer = self._side_views(n, 1)
         self._quantize(input_, p_own, s_own, n)
-        # Two one-way phases: rank 0 -> rank 1, CPU barrier, rank 1 -> rank
-        # 0. Each op is stream-ordered, so a phase's data is fully received
-        # on the destination before the reverse direction starts.
-        if self.rank == 0:
-            self._comm.send(own, 1)
-            dist.barrier(group=self._cpu_group)
-            self._comm.recv(peer, 1)
-        else:
-            self._comm.recv(peer, 0)
-            dist.barrier(group=self._cpu_group)
-            self._comm.send(own, 0)
+        # Exchange both directions inside a single NCCL group so the send and
+        # recv overlap instead of serializing behind a CPU barrier. Plain
+        # NCCL send/recv (host transport), so no GPU P2P is required.
+        peer_rank = 1 - self.rank
+        self._comm.group_start()
+        self._comm.send(own, peer_rank)
+        self._comm.recv(peer, peer_rank)
+        self._comm.group_end()
         self.dequant_add(p_own, s_own, p_peer, s_peer, out)
         return out
